@@ -14,6 +14,19 @@ env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
 
+def _env(name: str, default: str = "") -> str:
+    """os.getenv with the value trimmed: keys are usually pasted into .env by
+    hand, and a stray leading/trailing space (or a quoted value) must not turn
+    into an authentication failure."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value
+
+
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in ("true", "1", "yes")
 
@@ -37,34 +50,39 @@ def _parse_float(value: str, default: float) -> float:
 # ---------------------------------------------------------------------------
 # External services
 # ---------------------------------------------------------------------------
-FIWARE_BASE_URL = os.getenv("FIWARE_BASE_URL", "https://imiq-public.et.uni-magdeburg.de/api/orion")
-FIWARE_API_KEY = os.getenv("FIWARE_API_KEY", "")
+FIWARE_BASE_URL = _env("FIWARE_BASE_URL", "https://imiq-public.et.uni-magdeburg.de/api/orion")
+FIWARE_API_KEY = _env("FIWARE_API_KEY", "")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_API_KEY = _env("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = _env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://127.0.0.1:7687")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+NEO4J_URI = _env("NEO4J_URI", "neo4j://127.0.0.1:7687")
+NEO4J_USERNAME = _env("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = _env("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = _env("NEO4J_DATABASE", "neo4j")
 
-ORS_API_KEY = os.getenv("ORS_API_KEY", "")
-ORS_BASE_URL = os.getenv("ORS_BASE_URL", "https://api.openrouteservice.org")
+ORS_API_KEY = _env("ORS_API_KEY", "")
+ORS_BASE_URL = _env("ORS_BASE_URL", "https://api.openrouteservice.org")
+
+# Second route-SHAPE provider for the map (raced against ORS; first answer
+# wins). Default: the public FOSSGIS Valhalla instance (no key, fair use).
+# Empty disables it.
+VALHALLA_URL = _env("VALHALLA_URL", "https://valhalla1.openstreetmap.de")
 
 # IMIQ ranked-routes API (GraphHopper-backed) — walking/cycling/driving routes.
-IMIQ_ROUTING_URL = os.getenv(
+IMIQ_ROUTING_URL = _env(
     "IMIQ_ROUTING_URL", "https://imiq-app.et.uni-magdeburg.de/api/routing"
 )
 
 # Geocoder fallback chain for off-graph place names: the in-house IMIQ
 # geocoder first, then Nominatim (OSM) as the backup tier.
-IMIQ_GEOCODE_URL = os.getenv(
+IMIQ_GEOCODE_URL = _env(
     "IMIQ_GEOCODE_URL", "https://imiq-public.et.uni-magdeburg.de/api/geocode"
 )
-NOMINATIM_URL = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
+NOMINATIM_URL = _env("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
 
 # City events feed (Magdeburg event calendar scraped into the IMIQ platform).
-IMIQ_EVENTS_URL = os.getenv(
+IMIQ_EVENTS_URL = _env(
     "IMIQ_EVENTS_URL", "https://imiq-public.et.uni-magdeburg.de/api/events"
 )
 
@@ -72,29 +90,29 @@ IMIQ_EVENTS_URL = os.getenv(
 # ---------------------------------------------------------------------------
 # Application settings
 # ---------------------------------------------------------------------------
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-MAX_CONVERSATION_HISTORY = _parse_int(os.getenv("MAX_CONVERSATION_HISTORY", "6"), 6)
-HTTP_TIMEOUT = _parse_int(os.getenv("HTTP_TIMEOUT", "10"), 10)
+EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+MAX_CONVERSATION_HISTORY = _parse_int(_env("MAX_CONVERSATION_HISTORY", "6"), 6)
+HTTP_TIMEOUT = _parse_int(_env("HTTP_TIMEOUT", "10"), 10)
 
-MAGDEBURG_LAT = _parse_float(os.getenv("MAGDEBURG_LAT", "52.1205"), 52.1205)
-MAGDEBURG_LON = _parse_float(os.getenv("MAGDEBURG_LON", "11.6276"), 11.6276)
+MAGDEBURG_LAT = _parse_float(_env("MAGDEBURG_LAT", "52.1205"), 52.1205)
+MAGDEBURG_LON = _parse_float(_env("MAGDEBURG_LON", "11.6276"), 11.6276)
 
 
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
-SINGLE_AGENT_MODEL = os.getenv("SINGLE_AGENT_MODEL", "gpt-5.4-thinking")
-AGENT_TIMEOUT = _parse_int(os.getenv("AGENT_TIMEOUT", "90"), 90)  # wall-clock seconds
-AGENT_VERBOSE_LOGGING = _parse_bool(os.getenv("AGENT_VERBOSE_LOGGING", "false"))
+SINGLE_AGENT_MODEL = _env("SINGLE_AGENT_MODEL", "gpt-5.4-thinking")
+AGENT_TIMEOUT = _parse_int(_env("AGENT_TIMEOUT", "90"), 90)  # wall-clock seconds
+AGENT_VERBOSE_LOGGING = _parse_bool(_env("AGENT_VERBOSE_LOGGING", "false"))
 
 
 # ---------------------------------------------------------------------------
 # Semantic cache
 # ---------------------------------------------------------------------------
-SEMANTIC_CACHE_ENABLED = _parse_bool(os.getenv("SEMANTIC_CACHE_ENABLED", "true"))
-SEMANTIC_CACHE_THRESHOLD = _parse_float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.88"), 0.88)
-SEMANTIC_CACHE_TTL = _parse_int(os.getenv("SEMANTIC_CACHE_TTL", "3600"), 3600)
-SEMANTIC_CACHE_MAX_SIZE = _parse_int(os.getenv("SEMANTIC_CACHE_MAX_SIZE", "500"), 500)
+SEMANTIC_CACHE_ENABLED = _parse_bool(_env("SEMANTIC_CACHE_ENABLED", "true"))
+SEMANTIC_CACHE_THRESHOLD = _parse_float(_env("SEMANTIC_CACHE_THRESHOLD", "0.88"), 0.88)
+SEMANTIC_CACHE_TTL = _parse_int(_env("SEMANTIC_CACHE_TTL", "3600"), 3600)
+SEMANTIC_CACHE_MAX_SIZE = _parse_int(_env("SEMANTIC_CACHE_MAX_SIZE", "500"), 500)
 
 
 # ---------------------------------------------------------------------------
@@ -104,27 +122,69 @@ SEMANTIC_CACHE_MAX_SIZE = _parse_int(os.getenv("SEMANTIC_CACHE_MAX_SIZE", "500")
 # via the browser). The key lives server-side ONLY; the browser never talks
 # to ElevenLabs directly (api.py proxies it).
 # ---------------------------------------------------------------------------
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")  # "Adam" (premade, multilingual)
+ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = _env("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB")  # "Adam" (premade, multilingual)
 # eleven_v3: the expressive tier — supports inline audio tags ([sighs],
 # [laughs], [pause]) that the voice-mode prompt asks the agent to sprinkle in.
 # Higher first-sound latency than flash_v2_5 (~1.5-3s vs sub-second), masked
 # by the ack clips. Swap back to eleven_flash_v2_5 for the lowest latency
 # (tags are then stripped from display but read aloud — keep them together).
 # NOTE: v3 does not accept previous_text (the client omits it automatically).
-ELEVENLABS_TTS_MODEL = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_v3")
-ELEVENLABS_STT_MODEL = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v1")
+ELEVENLABS_TTS_MODEL = _env("ELEVENLABS_TTS_MODEL", "eleven_v3")
+ELEVENLABS_STT_MODEL = _env("ELEVENLABS_STT_MODEL", "scribe_v2")
 # v3 stability: 0.0 "Creative" (most expressive, most variable) · 0.5 "Natural"
 # · 1.0 "Robust" (most consistent tone across generations, least responsive to
 # audio tags). Raise toward 1.0 if the voice's mood jumps between sentences.
-ELEVENLABS_TTS_STABILITY = _parse_float(os.getenv("ELEVENLABS_TTS_STABILITY", "0.5"), 0.5)
+ELEVENLABS_TTS_STABILITY = _parse_float(_env("ELEVENLABS_TTS_STABILITY", "0.5"), 0.5)
+# Fast model for the spoken REACTIONS ("Ooh, the Mensa, one sec") so they are
+# heard almost instantly; answers keep the expressive ELEVENLABS_TTS_MODEL.
+ELEVENLABS_TTS_FAST_MODEL = _env("ELEVENLABS_TTS_FAST_MODEL", "eleven_flash_v2_5")
+
+# Spoken-reaction side call (voice turns only, services/voice_reaction.py): a
+# tiny LLM call that reacts to what the user SAID while the agent looks things
+# up. Defaults to the agent model with minimal reasoning; empty model disables.
+VOICE_REACTION_MODEL = _env("VOICE_REACTION_MODEL", SINGLE_AGENT_MODEL)
+VOICE_REACTION_REASONING = _env("VOICE_REACTION_REASONING", "none")  # gpt-5.4: none|low|medium|high; "" = don't send
+VOICE_REACTION_TIMEOUT = _parse_float(_env("VOICE_REACTION_TIMEOUT", "4"), 4.0)
+
+
+# ---------------------------------------------------------------------------
+# Study mode — a fixed "you are here" (optional)
+# ---------------------------------------------------------------------------
+# For user studies run indoors at one known place (GPS is useless inside, and
+# a shared study laptop has no sensible position): when STUDY_LOCATION_LAT and
+# STUDY_LOCATION_LON are set, every chat turn is anchored on that point,
+# whatever the browser sent. The agent treats it as the user's shared
+# location, so a route question with no stated origin starts THERE (no "from
+# where?" round-trip) and "near me" means near there; the widget's
+# Share-location button reports it as the position without touching the
+# browser's geolocation. Leave both empty for real GPS. Restart api.py after
+# changing them.
+def _parse_optional_float(value: str):
+    try:
+        return float(value) if value and value.strip() else None
+    except (ValueError, TypeError):
+        print(f"WARNING: Invalid float value '{value}', ignoring")
+        return None
+
+
+STUDY_LOCATION_LAT = _parse_optional_float(_env("STUDY_LOCATION_LAT", ""))
+STUDY_LOCATION_LON = _parse_optional_float(_env("STUDY_LOCATION_LON", ""))
+STUDY_LOCATION_NAME = _env("STUDY_LOCATION_NAME", "")
+STUDY_LOCATION = None
+if STUDY_LOCATION_LAT is not None and STUDY_LOCATION_LON is not None:
+    if 52.05 <= STUDY_LOCATION_LAT <= 52.20 and 11.55 <= STUDY_LOCATION_LON <= 11.75:
+        STUDY_LOCATION = (STUDY_LOCATION_LAT, STUDY_LOCATION_LON)
+    else:
+        print("WARNING: STUDY_LOCATION_LAT/LON are outside Magdeburg (lat 52.05-52.20, "
+              "lon 11.55-11.75) - study mode ignored.")
 
 
 # ---------------------------------------------------------------------------
 # Optional infrastructure
 # ---------------------------------------------------------------------------
 # Distributed rate limiter backend (optional; falls back to in-memory if empty)
-REDIS_URL = os.getenv("REDIS_URL", "")
+REDIS_URL = _env("REDIS_URL", "")
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +275,12 @@ if __name__ == "__main__":
     print(f"   Model: {SINGLE_AGENT_MODEL}")
     print(f"   Timeout: {AGENT_TIMEOUT}s")
     print(f"   Verbose Logging: {'Yes' if AGENT_VERBOSE_LOGGING else 'No'}")
+
+    print("\nStudy mode:")
+    if STUDY_LOCATION:
+        print(f"   Fixed location: {STUDY_LOCATION_NAME or '(unnamed)'} at {STUDY_LOCATION[0]}, {STUDY_LOCATION[1]}")
+    else:
+        print("   Off (real GPS)")
 
     print("\n" + "=" * 60)
 

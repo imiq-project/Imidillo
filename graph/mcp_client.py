@@ -24,6 +24,7 @@ the stack tears all subprocesses down.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from contextlib import AsyncExitStack
@@ -195,7 +196,26 @@ class _ResilientMCPTool(BaseTool):
 
     async def _arun(self, *args: Any, **kwargs: Any) -> Any:
         kwargs.pop("run_manager", None)
-        return await self.conn.call(self.tool_name, kwargs)
+        try:
+            return await self.conn.call(self.tool_name, kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A failing tool must never kill the whole agent turn: the ReAct
+            # tool node re-raises tool exceptions, which aborted the stream and
+            # left the user with "NO ANSWER" (seen with a Neo4j auth failure
+            # inside find_transit_route). Hand the agent an honest error result
+            # instead, so it can say what it couldn't look up (FAILURE HANDLING
+            # in the prompt) and still answer the rest of the question.
+            detail = " ".join(str(exc).split())[:400] or type(exc).__name__
+            print(f"[MCP] tool '{self.tool_name}' failed: {type(exc).__name__}: {detail}", flush=True)
+            return json.dumps({
+                "error": "tool_failed",
+                "tool": self.tool_name,
+                "detail": detail,
+                "hint": "This lookup is unavailable right now. Tell the user honestly; "
+                        "don't repeat the same call more than once.",
+            })
 
 
 async def open_mcp_tools(

@@ -8,6 +8,9 @@ IMIQRoutingClient, and IMIQGeocodeClient for external service integration.
   PRIMARY fallback tier for off-graph place names (Nominatim is the backup).
 - ORSClient: route polyline geometry only (map overlay), plus the
   `decode_geometry` helper api.py uses at card-build time.
+- ValhallaClient: second geometry provider, raced against ORS by the
+  routing server (first answer wins) so a slow ORS never leaves the map
+  with a dashed straight line.
 - FIWAREClient: see fiware_client module for sync + async variants.
 
 Sync methods remain fully callable (they bridge to async internally via a
@@ -21,6 +24,7 @@ from .fiware_client import FIWAREClient
 from .imiq_client import IMIQRoutingClient
 from .imiq_geocode_client import IMIQGeocodeClient
 from .ors_client import ORSClient
+from .valhalla_client import ValhallaClient
 
 __all__ = [
     'ElevenLabsClient',
@@ -28,4 +32,5 @@ __all__ = [
     'IMIQGeocodeClient',
     'IMIQRoutingClient',
     'ORSClient',
+    'ValhallaClient',
 ]

@@ -6,6 +6,7 @@ tool call.
 """
 
 import json
+import re
 import sys
 import os
 import time
@@ -84,6 +85,20 @@ def _neo4j_read(cypher: str, params: dict = None, timeout: float = _DEFAULT_QUER
     with _neo4j_driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(_q(cypher, timeout=timeout), parameters=params or {})
         return [dict(record) for record in result]
+
+
+# A bare "lat, lon" pair (the user's own position) is used as-is.
+_COORD_TEXT_RE = re.compile(r"^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$")
+
+
+def _coords_location(text: str) -> dict | None:
+    m = _COORD_TEXT_RE.match(text or "")
+    if not m:
+        return None
+    lat, lon = float(m.group(1)), float(m.group(2))
+    if not (52.05 <= lat <= 52.20 and 11.55 <= lon <= 11.75):
+        return None
+    return {"type": "coordinates", "name": "your location", "lat": lat, "lon": lon}
 
 
 def _resolve_location(name: str) -> dict | None:
@@ -201,8 +216,9 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
         including walking distance to parking and a `parking_fallback`
         block with `within_radius: bool` per item when applicable.
     """
-    # Step 1: Resolve location to coordinates via Neo4j
-    resolved = _resolve_location(location)
+    # Step 1: Resolve location to coordinates via Neo4j (a bare "lat, lon"
+    # pair — the user's own position — is used as-is).
+    resolved = _coords_location(location) or _resolve_location(location)
     if not resolved:
         return json.dumps({
             "error": f"Could not find location '{location}' in the knowledge graph.",

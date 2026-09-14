@@ -45,9 +45,11 @@ from models import Coordinates
 from config import (
     REDIS_URL, AGENT_TIMEOUT, IMIQ_GEOCODE_URL,
     ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID,
-    ELEVENLABS_TTS_MODEL, ELEVENLABS_STT_MODEL,
-    ELEVENLABS_TTS_STABILITY,
+    ELEVENLABS_TTS_MODEL, ELEVENLABS_TTS_FAST_MODEL, ELEVENLABS_STT_MODEL,
+    ELEVENLABS_TTS_STABILITY, VOICE_REACTION_MODEL,
+    STUDY_LOCATION, STUDY_LOCATION_NAME,
 )
+from services.voice_reaction import voice_reaction
 from clients.elevenlabs_client import ElevenLabsClient, VoiceError
 from clients.imiq_geocode_client import IMIQGeocodeClient
 from clients.ors_client import decode_geometry
@@ -356,7 +358,7 @@ async def lifespan(app: FastAPI):
     from graph.mcp_client import open_mcp_tools
     from graph.graph import build_graph
 
-    from graph.agent import build_single_agent
+    from graph.agent import build_single_agent, build_voice_agent
 
     _mcp_stack = AsyncExitStack()
     await _mcp_stack.__aenter__()
@@ -366,6 +368,9 @@ async def lifespan(app: FastAPI):
     # SAME agent for the non-streaming path.
     agent, _tool_names = build_single_agent(tools)
     ctx.single_agent = agent
+    # Voice turns stream through a twin agent whose SYSTEM prompt carries the
+    # spoken-output rules (same MCP tools, same knowledge).
+    ctx.voice_agent, _ = build_voice_agent(tools)
     ctx.graph_app = build_graph(
         fiware_client=ctx.fiware_client,
         semantic_cache=ctx.semantic_cache,
@@ -374,6 +379,17 @@ async def lifespan(app: FastAPI):
         agent=agent,
     )
     logger.info(f"[MCP] single gpt-5.4 agent ready on {len(tools)} MCP tools: {per_server}")
+
+    # Loud startup check: wrong NEO4J_* credentials don't stop the MCP servers
+    # from booting, but every graph tool (buildings, transit, place lookup)
+    # then fails per call. Say so once, clearly, at startup.
+    if await asyncio.to_thread(ctx.neo4j_graph.test_connection):
+        logger.info("[STARTUP] Neo4j connection OK")
+    else:
+        logger.error("[STARTUP] Neo4j connection FAILED - check NEO4J_URI / NEO4J_USERNAME / "
+                     "NEO4J_PASSWORD in .env (an Aura Free instance may also be paused). "
+                     "Building, transit and place lookups will fail until this is fixed; "
+                     "restart after fixing so the graph schema loads into the prompt.")
 
     try:
         yield
@@ -424,14 +440,17 @@ class UserLocation(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = Field(None, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
-    language: Optional[str] = Field("en", pattern=r"^(en|de)$")
+    # Interface language from the widget's EN/DE switch. When present, the agent
+    # is told to answer in it regardless of the question's language; None (older
+    # clients) keeps the mirror-the-user behaviour.
+    language: Optional[str] = Field(None, pattern=r"^(en|de)$")
     user_location: Optional[UserLocation] = None
     # Client's location-sharing state when no coordinates are sent:
     # "off" | "denied" | "unavailable" | "timeout" | "unsupported" (or "on").
     location_status: Optional[str] = Field(None, max_length=32)
     stream: bool = False
-    # True when the widget is in hands-free speaking mode: the answer will be
-    # HEARD, not read — the agent gets a spoken-conversation style instruction.
+    # True when the question came in by voice (push-to-talk) and the answer
+    # will be spoken back — the agent gets a spoken-conversation style instruction.
     voice_mode: bool = False
 
 
@@ -476,12 +495,22 @@ async def root():
                             headers={"Cache-Control": "no-cache"})
     return HTMLResponse("<h1>Magdeburg Assistant API</h1><p>No chat UI installed.</p>")
 
+def _study_location_payload():
+    """Study mode (config STUDY_LOCATION_*) as the widget reads it, or None."""
+    if STUDY_LOCATION is None:
+        return None
+    return {"lat": STUDY_LOCATION[0], "lon": STUDY_LOCATION[1], "name": STUDY_LOCATION_NAME}
+
+
 @app.get("/status", tags=["meta"])
 async def status():
     return {
         "status": "online",
         "version": "6.0.0",
-        "features": ["langgraph", "single_agent", "mcp_optional"]
+        "features": ["langgraph", "single_agent", "mcp_optional"],
+        # The widget refreshes this for a RESTORED session (tab reload across
+        # a server restart), which never calls /session/start.
+        "study_location": _study_location_payload(),
     }
 
 @app.get("/health", tags=["meta"])
@@ -934,13 +963,14 @@ def _card_dedup_key(card):
 
 
 def _build_graph_input(message: str, session_id: str, user_location, conversation_history,
-                       location_status=None):
+                       location_status=None, language=None):
     return {
         "query": message,
         "session_id": session_id,
         "messages": [],
         "user_location": user_location,
         "location_status": location_status,
+        "language": language,
         "conversation_history": conversation_history,
         "pinned_context": _get_pinned_context(session_id),
         "response": None,
@@ -1011,43 +1041,29 @@ async def _compute_proactive_context(user_location) -> str:
         return ""
 
 
-# Spoken-conversation style for hands-free speaking mode. Injected per turn
+# Spoken-conversation style for speaking mode (voice turns). Injected per turn
 # (the cached system prompt stays shared between chat and voice). The tag
 # vocabulary matches ElevenLabs v3 audio tags; api.py strips them from the
 # stored history and the widget strips them from the visible bubbles, so
 # they exist only for the voice engine.
 _VOICE_STYLE_BLOCK = (
-    "VOICE CONVERSATION MODE: the user is SPEAKING with you and will HEAR this "
-    "answer read aloud — they never see it written. Talk like a warm, quick-witted "
-    "local friend: natural spoken sentences, contractions, a light touch of humor "
-    "when it fits. Keep it SHORT — lead with the answer in one or two spoken "
-    "sentences, then at most a couple of the most useful details. NO lists, NO "
-    "markdown, NO URLs, NO coordinates; say numbers the way people speak them "
-    "('about ten minutes', 'roughly a kilometer'). The voice engine is ElevenLabs "
-    "v3 and understands audio tags in square brackets, but keep the delivery CALM "
-    "and even: ONE consistent, relaxed tone from the first word to the last — "
-    "never shift emotional register mid-answer. Use at most ONE subtle tag per "
-    "ANSWER ([pause], [sighs], or a soft spoken 'Hmm,'), and most answers should "
-    "have none. No [laughs] or [excited] unless the user said something genuinely "
-    "funny. Never place a tag inside a name or a number. "
-    "This is a two-way CONVERSATION, not an announcement: a greeting gets a warm "
-    "greeting plus a short invite ('Hey! How can I help?') — one line, NO "
-    "capability list unless they ask what you can do. For routes, give ONLY the "
-    "best option with the reason it wins right now, then offer the rest in a few "
-    "words ('or I can check the car option?'). One short, concrete follow-up "
-    "question at the end is welcome whenever it genuinely helps — never filler "
-    "like 'let me know if you need anything'."
+    "VOICE TURN: the user SPOKE this and will HEAR your answer through the voice engine. "
+    "Follow the SPOKEN OUTPUT rules: open with a natural spoken reaction word, one or two "
+    "audio tags where a person would react, numbers as words, no lists or markdown, short. "
+    "A brief reaction line may already have been played while you worked, so start with "
+    "the substance."
 )
 
 
 async def _compose_user_message(query, user_location, conversation_history,
                                 location_status=None, voice_mode=False,
-                                pinned_context="") -> str:
+                                pinned_context="", language=None) -> str:
     """Assemble the agent's user message exactly like the single_agent graph
     node does (recent history + current time + location + pinned places +
     proactive context + question), plus the spoken-style block when the turn
     came in by voice."""
-    from graph.agent import _format_history, _format_location_status, _format_now
+    from graph.agent import (_format_answer_language, _format_history,
+                             _format_location_status, _format_now)
     parts = []
     history_text = _format_history(conversation_history or [])
     if history_text:
@@ -1061,6 +1077,9 @@ async def _compose_user_message(query, user_location, conversation_history,
     proactive_context = await _compute_proactive_context(user_location)
     if proactive_context:
         parts.append(proactive_context)
+    language_text = _format_answer_language(language)
+    if language_text:
+        parts.append(language_text)
     if voice_mode:
         parts.append(_VOICE_STYLE_BLOCK)
     parts.append(f"Question: {query}")
@@ -1069,7 +1088,7 @@ async def _compose_user_message(query, user_location, conversation_history,
 
 async def _stream_chat(message: str, orig_message: str, session_id: str,
                        user_location, conversation_history, location_status=None,
-                       voice_mode=False):
+                       voice_mode=False, language=None):
     """Stream the agent's answer token-by-token (ChatGPT/Claude-style).
 
     Streams the gpt-5.4 ReAct agent DIRECTLY with stream_mode=["values",
@@ -1084,17 +1103,20 @@ async def _stream_chat(message: str, orig_message: str, session_id: str,
     back to the one-shot graph path if the agent handle is unavailable. Note:
     the streaming path skips the semantic cache (disabled in prod anyway).
     """
-    agent = getattr(ctx, "single_agent", None)
+    agent = ((getattr(ctx, "voice_agent", None) if voice_mode else None)
+             or getattr(ctx, "single_agent", None))
     if agent is None:
         async for ev in _stream_chat_oneshot(
-            message, orig_message, session_id, user_location, conversation_history, location_status
+            message, orig_message, session_id, user_location, conversation_history, location_status,
+            language,
         ):
             yield ev
         return
 
     user_msg = await _compose_user_message(message, user_location, conversation_history,
                                            location_status, voice_mode=voice_mode,
-                                           pinned_context=_get_pinned_context(session_id))
+                                           pinned_context=_get_pinned_context(session_id),
+                                           language=language)
     inputs = {"messages": [HumanMessage(content=user_msg)]}
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -1127,6 +1149,18 @@ async def _stream_chat(message: str, orig_message: str, session_id: str,
             await queue.put(("__end__", None))
 
     prod_task = asyncio.create_task(_producer())
+
+    # Voice turns: a tiny side call reacts to what the user SAID ("Ooh, the
+    # Mensa, one sec") in parallel with the agent. Sent as its own SSE event;
+    # the widget plays it only if the real answer hasn't started talking.
+    reaction_task = None
+    if voice_mode and _voice.available and VOICE_REACTION_MODEL:
+        async def _react():
+            r = await voice_reaction(orig_message, conversation_history, language)
+            if r:
+                await queue.put(("reaction", r))
+        reaction_task = asyncio.create_task(_react())
+
     KEEPALIVE_INTERVAL = 2.5
     start = time.monotonic()
     acc: list = []
@@ -1153,6 +1187,9 @@ async def _stream_chat(message: str, orig_message: str, session_id: str,
             if kind == "token":
                 acc.append(payload)
                 yield f"data: {json.dumps({'type':'token','content':payload})}\n\n"
+            elif kind == "reaction":
+                fillers = payload.get('fillers') or ([payload['filler']] if payload.get('filler') else [])
+                yield f"data: {json.dumps({'type': 'reaction', 'text': payload.get('text', ''), 'filler': (fillers[0] if fillers else ''), 'fillers': fillers})}\n\n"
             elif kind == "final":
                 final_msgs = payload
             elif kind == "error":
@@ -1205,10 +1242,13 @@ async def _stream_chat(message: str, orig_message: str, session_id: str,
     finally:
         if not prod_task.done():
             prod_task.cancel()
+        if reaction_task is not None and not reaction_task.done():
+            reaction_task.cancel()
 
 
 async def _stream_chat_oneshot(message: str, orig_message: str, session_id: str,
-                       user_location, conversation_history, location_status=None):
+                       user_location, conversation_history, location_status=None,
+                       language=None):
     """One-shot fallback: run the full graph via ainvoke and send the answer in
     a single chunk. Used only when the streaming agent handle is unavailable.
 
@@ -1231,7 +1271,7 @@ async def _stream_chat_oneshot(message: str, orig_message: str, session_id: str,
     and confirm it propagates correctly.
     """
     input_state = _build_graph_input(message, session_id, user_location, conversation_history,
-                                     location_status)
+                                     location_status, language)
     # Fresh thread_id per invocation so LangGraph's checkpointer doesn't
     # replay stale state from the previous turn. Conversation memory is
     # managed separately via `_session_histories` and passed in via
@@ -1404,24 +1444,34 @@ async def chat_endpoint(
     nearest_stop_task = None
     reverse_address_task = None
     user_location = None
-    if request.user_location:
-        loc = request.user_location
-        user_location = {"lat": loc.lat, "lon": loc.lon}
-        user_coords = Coordinates(lat=loc.lat, lon=loc.lon)
-        logger.info(f"User location: {user_coords.lat}, {user_coords.lon}")
+    if STUDY_LOCATION is not None:
+        # Study mode (config STUDY_LOCATION_*): every turn is anchored on the
+        # fixed study place, whatever the browser sent. The agent sees it as
+        # the user's shared location, so an unstated origin resolves to it.
+        user_location = {"lat": STUDY_LOCATION[0], "lon": STUDY_LOCATION[1]}
+    elif request.user_location:
+        user_location = {"lat": request.user_location.lat, "lon": request.user_location.lon}
+    if user_location:
+        user_coords = Coordinates(lat=user_location["lat"], lon=user_location["lon"])
+        logger.info(f"User location: {user_coords.lat}, {user_coords.lon}"
+                    + (" (study location)" if STUDY_LOCATION is not None else ""))
         nearest_stop_task = asyncio.create_task(
             asyncio.to_thread(_maybe_find_nearest_stop, user_coords)
         )
         # Reverse-geocode their position in parallel: the agent's location
         # line carries the street address so "where am I" gets a human answer.
         reverse_address_task = asyncio.create_task(
-            asyncio.to_thread(_reverse_user_address, loc.lat, loc.lon)
+            asyncio.to_thread(_reverse_user_address, user_coords.lat, user_coords.lon)
         )
 
     # Location-sharing state for the agent: trust the client's explicit status,
-    # else infer it from whether coordinates were actually sent.
-    location_status = (request.location_status
-                       or ("on" if user_location else "off")).strip().lower()
+    # else infer it from whether coordinates were actually sent. In study mode
+    # the position always counts as shared (the widget's button is cosmetic).
+    if STUDY_LOCATION is not None:
+        location_status = "on"
+    else:
+        location_status = (request.location_status
+                           or ("on" if user_location else "off")).strip().lower()
 
     # Attach the reverse-geocoded address to user_location for the agent's
     # location line (both the streaming and the graph path read it there).
@@ -1431,6 +1481,16 @@ async def chat_endpoint(
         except (asyncio.TimeoutError, Exception) as e:
             logger.info(f"[reverse_address] skipped ({type(e).__name__})")
             address = None
+        if STUDY_LOCATION is not None and STUDY_LOCATION_NAME:
+            # The configured name leads so the agent describes the PLACE. Give it
+            # as a full address ("IMIQ office (Building 80), Niels-Bohr-Straße 1,
+            # Alte Neustadt") — the reverse geocoder knows nothing at some
+            # spots (the science harbor), and a bare name invites the model to
+            # guess a street. A name with a comma is taken as complete.
+            if "," in STUDY_LOCATION_NAME or not address:
+                address = STUDY_LOCATION_NAME
+            else:
+                address = f"{STUDY_LOCATION_NAME}, {address}"
         if address:
             user_location["address"] = address
 
@@ -1475,7 +1535,8 @@ async def chat_endpoint(
     if request.stream:
         return StreamingResponse(
             _stream_chat(message, request.message, session_id, user_location, conversation_history,
-                         location_status, voice_mode=request.voice_mode),
+                         location_status, voice_mode=request.voice_mode,
+                         language=request.language),
             media_type="text/event-stream",
             # Content-Encoding: identity opts this stream OUT of GZipMiddleware,
             # which otherwise buffers the whole SSE response in its gzip
@@ -1496,7 +1557,7 @@ async def chat_endpoint(
             result = await asyncio.wait_for(
                 ctx.graph_app.ainvoke(
                     _build_graph_input(message, session_id, user_location, conversation_history,
-                                       location_status),
+                                       location_status, request.language),
                     config={"configurable": {"thread_id": f"{session_id}:{_uuid.uuid4().hex[:8]}"}},
                 ),
                 timeout=30.0,
@@ -1540,8 +1601,11 @@ async def session_start():
     # `voice` tells the widget whether the ElevenLabs proxy is configured, so
     # it can skip TTS entirely (spoken replies are silent by design when the
     # proxy is down — no backup voice) without probing a 503 first.
+    # `study_location` (study mode, config STUDY_LOCATION_*): the widget's
+    # Share-location button reports this fixed place instead of asking the
+    # browser for a position. None when study mode is off.
     return {"session_id": session_id, "session_token": session_token,
-            "voice": _voice.available}
+            "voice": _voice.available, "study_location": _study_location_payload()}
 
 
 @app.post("/session/{session_id}/end", tags=["session"])
@@ -1591,8 +1655,9 @@ _voice = ElevenLabsClient(
     stability=ELEVENLABS_TTS_STABILITY,
 )
 if _voice.available:
-    logger.info("Voice: ElevenLabs proxy enabled (voice=%s, tts=%s, stt=%s)",
-                ELEVENLABS_VOICE_ID, ELEVENLABS_TTS_MODEL, ELEVENLABS_STT_MODEL)
+    logger.info("Voice: ElevenLabs proxy enabled (voice=%s, tts=%s, reactions=%s, stt=%s, "
+                "reaction model=%s)", ELEVENLABS_VOICE_ID, ELEVENLABS_TTS_MODEL,
+                ELEVENLABS_TTS_FAST_MODEL, ELEVENLABS_STT_MODEL, VOICE_REACTION_MODEL or "off")
 else:
     logger.info("Voice: ELEVENLABS_API_KEY not set — /voice/* disabled, "
                 "spoken replies are silent (no backup voice by design)")
@@ -1625,9 +1690,9 @@ def _tts_sanitize(text: str) -> str:
     return " ".join(t.split())
 
 
-def _voice_cache_path(text: str, language: Optional[str]) -> str:
+def _voice_cache_path(text: str, language: Optional[str], model: str) -> str:
     key = hashlib.sha1(
-        f"{ELEVENLABS_VOICE_ID}|{ELEVENLABS_TTS_MODEL}|{language or ''}|{text}"
+        f"{ELEVENLABS_VOICE_ID}|{model}|{language or ''}|{text}"
         .encode("utf-8")
     ).hexdigest()
     return os.path.join(_VOICE_CACHE_DIR, f"tts_{key}.mp3")
@@ -1654,6 +1719,12 @@ class TTSRequest(BaseModel):
     # Previous spoken sentence — forwarded to ElevenLabs for prosody
     # continuity across the widget's sentence-by-sentence synthesis.
     previous_text: Optional[str] = Field(None, max_length=600)
+    # "reaction" = the instant spoken one-liner while the agent works (goes
+    # through ELEVENLABS_TTS_FAST_MODEL). Anything else is an answer chunk.
+    purpose: Optional[str] = Field("answer", pattern=r"^(answer|reaction)$")
+    # True for the LAST chunk of an answer. Only that one (and reactions) gets
+    # the anti-clipping [pause] — mid-answer chunks must flow into the next.
+    final: Optional[bool] = False
 
 
 @app.post("/voice/tts", tags=["voice"])
@@ -1667,20 +1738,28 @@ async def voice_tts(
     if not _voice.available:
         raise HTTPException(status_code=503, detail="Voice not configured")
 
+    # Reactions ("Ooh, the Mensa, one sec") take the FAST model so they are
+    # heard almost immediately; answer chunks use the expressive v3 model.
+    model = ELEVENLABS_TTS_FAST_MODEL if request.purpose == "reaction" else ELEVENLABS_TTS_MODEL
     text = _tts_sanitize(request.text)
+    if not model.startswith("eleven_v3"):
+        text = _strip_voice_tags(text)   # flash/turbo would read "[laughs]" aloud
     if not text:
         raise HTTPException(status_code=400, detail="Nothing speakable in text")
 
     # eleven_v3 sometimes clips the FINAL word of very short texts ("Anytime,
     # bud—" instead of "buddy"). A trailing [pause] gives the model material
     # to render after the last word, so it finishes cleanly. v3-only: flash
-    # doesn't understand tags and would read "pause" aloud. Applied before
-    # cache keying, so cached clips are consistently the padded version.
-    if ELEVENLABS_TTS_MODEL.startswith("eleven_v3") and len(text) < 80:
+    # doesn't understand tags and would read "pause" aloud. ONLY on the last
+    # clip of an answer (or a reaction): v3 renders [pause] as up to ~3 s of
+    # silence, which mid-answer became a hole between two chunks. Applied
+    # before cache keying, so cached clips are consistently the padded version.
+    if (model.startswith("eleven_v3") and len(text) < 80
+            and (request.final or request.purpose == "reaction")):
         text = f"{text} [pause]"
 
     cacheable = len(text) <= _VOICE_CACHE_MAX_TEXT and not request.previous_text
-    cache_path = _voice_cache_path(text, request.language) if cacheable else None
+    cache_path = _voice_cache_path(text, request.language, model) if cacheable else None
 
     # Content-Encoding: identity opts audio out of GZipMiddleware — MP3 is
     # already compressed, and the gzip wrapper would buffer + waste CPU.
@@ -1693,6 +1772,7 @@ async def voice_tts(
         previous = _tts_sanitize(request.previous_text) if request.previous_text else None
         audio = await _voice.atts(
             text, language_code=request.language, previous_text=previous or None,
+            model_id=model,
         )
     except VoiceError as e:
         logger.warning("voice_tts failed: %s", e)

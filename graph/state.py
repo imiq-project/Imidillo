@@ -35,6 +35,10 @@ class AgentState(TypedDict, total=False):
     # enable location when a question needs their position but none was shared.
     location_status: Optional[str]
 
+    # Interface language from the widget's EN/DE switch ("en" | "de"): pins the
+    # answer language. None for clients that don't send one.
+    language: Optional[str]
+
     # Conversation history from prior turns: [{"role": ..., "content": ...}]
     conversation_history: list[dict[str, str]]
 

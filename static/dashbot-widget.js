@@ -11,15 +11,208 @@ let locationEnabled = false;
 // Reported to the backend so the agent knows WHY there are no coordinates and
 // can ask the user to enable location: 'on'|'off'|'denied'|'unavailable'|'timeout'|'unsupported'
 let locationStatus = 'off';
+// Study mode (server-configured, learned at /session/start): a fixed place the
+// Share-location button reports as the user's position instead of asking the
+// browser for GPS. null = normal geolocation.
+let studyLocation = null;
+
+// ---- Language: UI strings, speech recognition + synthesis language, and
+// the answer language the server instructs the agent to use. The user's last
+// choice wins, then the host's `language` option, then the browser language.
+// Switchable any time from the EN/DE button in the header. ----
+let dbLang = null;
+try { dbLang = localStorage.getItem('dashbot-lang'); } catch (e) {}
+if (dbLang !== 'en' && dbLang !== 'de') {
+    dbLang = (options && (options.language === 'de' || options.language === 'en')) ? options.language
+           : ((navigator.language || '').toLowerCase().indexOf('de') === 0 ? 'de' : 'en');
+}
+function sttLang() { return dbLang === 'de' ? 'de-DE' : 'en-US'; }
+
+const T = {
+    en: {
+        tooltip: 'Ask the Smart City',
+        online: 'Online',
+        newChat: 'New chat',
+        langTitle: 'Language: English — tap for German',
+        themeToDark: 'Switch to dark mode',
+        themeToLight: 'Switch to light mode',
+        voiceOn: 'Voice replies: on',
+        voiceOff: 'Voice replies: off',
+        welcomeTitle: 'Hey there!',
+        welcomeText: "I'm your smart city assistant. Ask me about parking, weather, traffic, campus buildings, routes, and more.",
+        qWeather: 'Current weather',      qWeatherQ: "What's the current temperature?",
+        qParking: 'Parking status',       qParkingQ: 'Available parking spaces?',
+        qBuilding: 'Find a building',     qBuildingQ: 'Where is the library?',
+        qDirections: 'Get directions',    qDirectionsQ: 'How do I get to Uni Mensa?',
+        qEvents: 'Events today',          qEventsQ: 'What events are happening in Magdeburg today?',
+        qLocation: 'Share my location',
+        placeholder: 'Ask about city data...',
+        thinking: 'Dashbot is thinking...',
+        thinkingPhrases: [
+            '\uD83C\uDF10 Scanning the city...',
+            '\uD83D\uDEE3\uFE0F Checking road conditions...',
+            '\uD83D\uDCCF Calculating distances...',
+            '\uD83D\uDCE1 Reading sensor data...',
+            '\uD83C\uDFDB\uFE0F Looking over campus buildings...',
+            '\uD83D\uDE97 Analyzing traffic flow...',
+            '\uD83C\uDD7F\uFE0F Checking parking availability...',
+            '\u26C5 Fetching weather updates...',
+            '\uD83D\uDE8B Mapping transit routes...',
+            '\u2699\uFE0F Querying smart city systems...',
+            '\uD83E\uDDE0 Processing your request...',
+            '\uD83D\uDCF6 Connecting to FIWARE sensors...',
+            '\uD83D\uDE8A Checking tram schedules...',
+            '\u2693 Surveying the Science Harbor...',
+            '\uD83D\uDDFA\uFE0F Exploring the map...',
+            '\uD83C\uDF21\uFE0F Reading temperatures...'
+        ],
+        pttTitle: 'Tap to talk — it sends when you stop speaking (or tap again). Holding works too.',
+        pttIdle: 'Tap to talk', pttInterrupt: 'Tap to interrupt',
+        pttRecording: 'Listening… release to send', pttListeningTap: 'Listening… tap when done',
+        pttBusy: 'Transcribing…',
+        speakBtn: 'Speak', speakBtnTitle: 'Talk to Dashbot by voice — the chat hides and only the avatar stays',
+        speakExit: 'Keyboard', speakThinking: 'Thinking…',
+        locOff: 'Share location', locLoading: 'Locating…', locOn: 'Location on', locError: 'No access',
+        locTitleOff: 'Tap to share your location', locTitleLoading: 'Getting your position…',
+        locTitleOn: 'Location is shared — tap to turn off', locTitleError: 'Location unavailable — tap to retry',
+        toastLocOff: 'Location disabled', toastLocOn: 'Location enabled', toastGeoUnsupported: 'Geolocation not supported',
+        toastLocErr: 'Location error', toastLocDenied: 'Location permission denied',
+        toastLocUnavailable: 'Location unavailable', toastLocTimeout: 'Location request timed out',
+        toastMicDenied: 'Microphone permission denied', toastVoiceFailed: 'Voice input failed',
+        toastVoiceUnsupported: 'Voice input not supported in this browser', toastTranscribeFailed: 'Transcription failed',
+        cStops: 'stops', cTransfer: 'transfer', cTransfers: 'transfers', cDirect: 'Direct',
+        cWalkStart: 'walk start', cWalkEnd: 'walk end', cStart: 'Start', cTransferAt: 'Transfer', cArrive: 'Arrive',
+        cStopsAlong: function (n) { return n + ' stop' + (n > 1 ? 's' : '') + ' along the way'; },
+        cRide: function (n) { return 'ride ' + n + ' stops'; },
+        route_walking: 'Walking route', route_cycling: 'Cycling route', route_driving: 'Driving route',
+        cTrafficUnit: 'traffic', cTrafficClear: 'Clear traffic', cTrafficSlow: 'Slow traffic', cTrafficHeavy: 'Heavy traffic',
+        cFree: 'free', cAirGood: 'Good air', cAirModerate: 'Moderate air', cAirPoor: 'Poor air',
+        cDirections: 'Turn-by-turn directions', cLocation: 'Location', cShownOnMap: 'Shown on the map',
+        cShowRoute: 'Show this route on the map', cShowPlace: 'Show on the map',
+        sDirections: 'Directions there', sDirectionsQ: 'How do I get there?',
+        sNearby: "What's nearby?", sNearbyQ: "What's around there?",
+        sParking: 'Parking nearby', sParkingQ: 'Available parking near me?',
+        sWeather: 'Weather now', sWeatherQ: "What's the weather right now?",
+        errNoAnswer: 'Sorry, I could not generate a response.',
+        errConnect: 'Cannot connect to Dashbot. Is the backend running?',
+        errGeneric: 'Sorry, something went wrong. Please try again.'
+    },
+    de: {
+        tooltip: 'Frag die Smart City',
+        online: 'Online',
+        newChat: 'Neuer Chat',
+        langTitle: 'Sprache: Deutsch — tippen für Englisch',
+        themeToDark: 'Zum dunklen Modus wechseln',
+        themeToLight: 'Zum hellen Modus wechseln',
+        voiceOn: 'Sprachausgabe: an',
+        voiceOff: 'Sprachausgabe: aus',
+        welcomeTitle: 'Hallo!',
+        welcomeText: 'Ich bin dein Smart-City-Assistent. Frag mich nach Parkplätzen, Wetter, Verkehr, Campus-Gebäuden, Routen und mehr.',
+        qWeather: 'Aktuelles Wetter',     qWeatherQ: 'Wie ist das Wetter gerade?',
+        qParking: 'Parkplätze',           qParkingQ: 'Wo gibt es gerade freie Parkplätze?',
+        qBuilding: 'Gebäude finden',      qBuildingQ: 'Wo ist die Bibliothek?',
+        qDirections: 'Weg finden',        qDirectionsQ: 'Wie komme ich zur Uni-Mensa?',
+        qEvents: 'Events heute',          qEventsQ: 'Welche Veranstaltungen gibt es heute in Magdeburg?',
+        qLocation: 'Standort teilen',
+        placeholder: 'Frag nach Stadtdaten…',
+        thinking: 'Dashbot denkt nach…',
+        thinkingPhrases: [
+            '\uD83C\uDF10 Ich schaue in der Stadt nach…',
+            '\uD83D\uDEE3\uFE0F Prüfe die Straßenlage…',
+            '\uD83D\uDCCF Berechne Entfernungen…',
+            '\uD83D\uDCE1 Lese Sensordaten…',
+            '\uD83C\uDFDB\uFE0F Sehe mir die Campus-Gebäude an…',
+            '\uD83D\uDE97 Analysiere den Verkehr…',
+            '\uD83C\uDD7F\uFE0F Prüfe die Parkplätze…',
+            '\u26C5 Hole Wetterdaten…',
+            '\uD83D\uDE8B Plane die Verbindung…',
+            '\u2699\uFE0F Frage die Smart-City-Systeme…',
+            '\uD83E\uDDE0 Verarbeite deine Anfrage…',
+            '\uD83D\uDCF6 Verbinde mit den FIWARE-Sensoren…',
+            '\uD83D\uDE8A Prüfe die Tram-Linien…',
+            '\u2693 Schaue im Wissenschaftshafen vorbei…',
+            '\uD83D\uDDFA\uFE0F Erkunde die Karte…',
+            '\uD83C\uDF21\uFE0F Lese Temperaturen…'
+        ],
+        pttTitle: 'Tippen zum Sprechen — sendet, wenn du aufhörst zu reden (oder erneut tippst). Halten geht auch.',
+        pttIdle: 'Tippen zum Sprechen', pttInterrupt: 'Tippen zum Unterbrechen',
+        pttRecording: 'Ich höre… loslassen zum Senden', pttListeningTap: 'Ich höre… tippe, wenn du fertig bist',
+        pttBusy: 'Übertrage…',
+        speakBtn: 'Sprechen', speakBtnTitle: 'Mit Dashbot sprechen — der Chat wird ausgeblendet, nur der Avatar bleibt',
+        speakExit: 'Tastatur', speakThinking: 'Denke nach…',
+        locOff: 'Standort teilen', locLoading: 'Suche Position…', locOn: 'Standort aktiv', locError: 'Kein Zugriff',
+        locTitleOff: 'Tippen, um deinen Standort zu teilen', locTitleLoading: 'Position wird ermittelt…',
+        locTitleOn: 'Standort wird geteilt — tippen zum Ausschalten', locTitleError: 'Standort nicht verfügbar — tippen zum erneuten Versuch',
+        toastLocOff: 'Standort deaktiviert', toastLocOn: 'Standort aktiviert', toastGeoUnsupported: 'Standortbestimmung nicht unterstützt',
+        toastLocErr: 'Standortfehler', toastLocDenied: 'Standortfreigabe verweigert',
+        toastLocUnavailable: 'Standort nicht verfügbar', toastLocTimeout: 'Zeitüberschreitung bei der Standortabfrage',
+        toastMicDenied: 'Mikrofonzugriff verweigert', toastVoiceFailed: 'Spracheingabe fehlgeschlagen',
+        toastVoiceUnsupported: 'Spracheingabe wird in diesem Browser nicht unterstützt', toastTranscribeFailed: 'Transkription fehlgeschlagen',
+        cStops: 'Haltestellen', cTransfer: 'Umstieg', cTransfers: 'Umstiege', cDirect: 'Direkt',
+        cWalkStart: 'Fußweg Start', cWalkEnd: 'Fußweg Ziel', cStart: 'Start', cTransferAt: 'Umsteigen', cArrive: 'Ankunft',
+        cStopsAlong: function (n) { return n + (n > 1 ? ' Haltestellen' : ' Haltestelle') + ' unterwegs'; },
+        cRide: function (n) { return n + ' Haltestellen fahren'; },
+        route_walking: 'Zu Fuß', route_cycling: 'Mit dem Rad', route_driving: 'Mit dem Auto',
+        cTrafficUnit: 'Verkehr', cTrafficClear: 'Verkehr frei', cTrafficSlow: 'Stockender Verkehr', cTrafficHeavy: 'Starker Verkehr',
+        cFree: 'frei', cAirGood: 'Gute Luft', cAirModerate: 'Mäßige Luft', cAirPoor: 'Schlechte Luft',
+        cDirections: 'Wegbeschreibung', cLocation: 'Ort', cShownOnMap: 'Auf der Karte markiert',
+        cShowRoute: 'Diese Route auf der Karte zeigen', cShowPlace: 'Auf der Karte zeigen',
+        sDirections: 'Weg dorthin', sDirectionsQ: 'Wie komme ich dorthin?',
+        sNearby: 'Was ist in der Nähe?', sNearbyQ: 'Was gibt es dort in der Nähe?',
+        sParking: 'Parken in der Nähe', sParkingQ: 'Gibt es freie Parkplätze in meiner Nähe?',
+        sWeather: 'Wetter jetzt', sWeatherQ: 'Wie ist das Wetter gerade?',
+        errNoAnswer: 'Entschuldigung, ich konnte keine Antwort erzeugen.',
+        errConnect: 'Keine Verbindung zu Dashbot. Läuft das Backend?',
+        errGeneric: 'Entschuldigung, etwas ist schiefgelaufen. Bitte versuch es noch einmal.'
+    }
+};
+
+function t(key) {
+    const table = T[dbLang] || T.en;
+    const v = table[key];
+    if (v !== undefined) return v;
+    return T.en[key] !== undefined ? T.en[key] : key;
+}
+
+// Welcome screen markup in the current language (initial render, reset, and
+// a language switch while it is still showing).
+function welcomeMarkup() {
+    function quick(icon, key) {
+        return '<button class="dashbot-quick-btn" data-q="' + dbEscape(t(key + 'Q')) + '">' +
+               '<span class="q-icon">' + icon + '</span> ' + dbEscape(t(key)) + '</button>';
+    }
+    return '<div class="dashbot-welcome" id="dashbotWelcome">' +
+        '<div class="dashbot-welcome-icon"></div>' +
+        '<h3>' + dbEscape(t('welcomeTitle')) + '</h3>' +
+        '<p>' + dbEscape(t('welcomeText')) + '</p>' +
+        '<div class="dashbot-quick-actions">' +
+            quick('&#127777;', 'qWeather') + quick('&#127359;', 'qParking') +
+            quick('&#127963;', 'qBuilding') + quick('&#128587;', 'qDirections') +
+            quick('&#127917;', 'qEvents') +
+            '<button class="dashbot-quick-btn dashbot-loc-quick" id="dashbotLocQuick" type="button">' +
+                '<span class="q-icon">&#128205;</span> ' + dbEscape(t('qLocation')) + '</button>' +
+        '</div>' +
+    '</div>';
+}
 
 // ---- Voice state (module functions live below, before the Send section) ----
-const DB_LANG = (options && options.language === 'de') ? 'de' : 'en';
-const DB_STT_LANG = DB_LANG === 'de' ? 'de-DE' : 'en-US';
 const SPEAK_ALL_REPLIES = !!(options && options.speakAllReplies); // speak typed turns too
 let voiceAvailable = false;     // backend /voice/* proxy configured (learned at /session/start)
 let voiceRepliesOn = true;      // master switch (header speaker button, persisted)
-let pendingVoiceInput = false;  // the next sendMessage() was initiated by the mic
+let pendingVoiceInput = false;  // the next sendMessage() was initiated by push-to-talk
 try { voiceRepliesOn = localStorage.getItem('dashbot-voice') !== 'off'; } catch (e) {}
+const DB_SR = window.SpeechRecognition || window.webkitSpeechRecognition;   // browser STT, if any
+
+// ---- Request state: one answer at a time. A new question (typed or spoken)
+// aborts the previous request's stream; its text stays, its speech stops. ----
+let activeController = null;
+let requestSeq = 0;
+let speakMode = false;          // speaking mode: chat hidden, only the avatar in the corner
+function abortActiveRequest() {
+    if (!activeController) return;
+    try { activeController.abort(); } catch (e) {}
+    activeController = null;
+}
 
 //  HTML 
 const html = `
@@ -27,7 +220,7 @@ const html = `
 <div class="dashbot-avatar" id="dashbotAvatar">
     <div class="avatar-inner"></div>
     <div class="avatar-status-dot"></div>
-    <div class="avatar-tooltip">Ask the Smart City</div>
+    <div class="avatar-tooltip">${t('tooltip')}</div>
 </div>
 
 <!-- Chat Side Panel -->
@@ -37,18 +230,14 @@ const html = `
             <div class="dashbot-header-avatar"></div>
             <div class="dashbot-header-info">
                 <h2>Dashbot</h2>
-                <span class="dashbot-header-status"><span class="dot"></span> Online</span>
+                <span class="dashbot-header-status"><span class="dot"></span> ${t('online')}</span>
             </div>
         </div>
         <div class="dashbot-header-actions">
-            <button class="dashbot-voicemode-btn" id="dashbotVoiceModeBtn" title="Speaking mode" type="button">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>
-                </svg>
-            </button>
+            <button class="dashbot-lang-btn" id="dashbotLangBtn" type="button" title="${t('langTitle')}">${dbLang.toUpperCase()}</button>
             <button class="dashbot-speaker-btn" id="dashbotSpeakerBtn" title="Voice replies"></button>
             <button class="dashbot-theme-btn" id="dashbotThemeBtn" title="Toggle dark mode"></button>
-            <button class="dashbot-reset-btn" id="dashbotResetBtn" title="New chat">
+            <button class="dashbot-reset-btn" id="dashbotResetBtn" title="${t('newChat')}">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38L21.5 8"/>
                 </svg>
@@ -58,57 +247,34 @@ const html = `
     </div>
 
     <div class="dashbot-messages" id="dashbotMessages">
-        <div class="dashbot-welcome" id="dashbotWelcome">
-            <div class="dashbot-welcome-icon"></div>
-            <h3>Hey there!</h3>
-            <p>I'm your smart city assistant. Ask me about parking, weather, traffic, campus buildings, routes, and more.</p>
-            <div class="dashbot-quick-actions">
-                <button class="dashbot-quick-btn" data-q="What's the current temperature?">
-                    <span class="q-icon">&#127777;</span> Current weather
-                </button>
-                <button class="dashbot-quick-btn" data-q="Available parking spaces?">
-                    <span class="q-icon">&#127359;</span> Parking status
-                </button>
-                <button class="dashbot-quick-btn" data-q="Where is the library?">
-                    <span class="q-icon">&#127963;</span> Find a building
-                </button>
-                <button class="dashbot-quick-btn" data-q="How do I get to Uni Mensa?">
-                    <span class="q-icon">&#128587;</span> Get directions
-                </button>
-                <button class="dashbot-quick-btn" data-q="What events are happening in Magdeburg today?">
-                    <span class="q-icon">&#127917;</span> Events today
-                </button>
-                <button class="dashbot-quick-btn dashbot-loc-quick" id="dashbotLocQuick" type="button">
-                    <span class="q-icon">&#128205;</span> Share my location
-                </button>
-            </div>
-        </div>
+        ${welcomeMarkup()}
     </div>
 
     <div class="dashbot-typing" id="dashbotTyping">
         <div class="db-typing-wave"><span></span><span></span><span></span><span></span><span></span></div>
-        <span class="dashbot-typing-text">Dashbot is thinking...</span>
+        <span class="dashbot-typing-text">${t('thinking')}</span>
     </div>
 
     <div class="dashbot-input-area">
         <div class="dashbot-context-bar">
-            <button class="dashbot-location-btn location-off" id="dashbotLocationBtn" type="button" title="Tap to share your location">
+            <button class="dashbot-speak-btn" id="dashbotSpeakBtn" type="button" title="${t('speakBtnTitle')}">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                    <circle cx="12" cy="10" r="3"/>
-                </svg>
-                <span class="db-loc-label">Share location</span>
-            </button>
-        </div>
-        <div class="dashbot-input-wrap">
-            <input type="text" class="dashbot-input" id="dashbotInput" placeholder="Ask about city data..." autocomplete="off">
-            <button class="dashbot-mic-btn" id="dashbotMicBtn" title="Talk to Dashbot" type="button">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                     <line x1="12" y1="19" x2="12" y2="23"/>
                 </svg>
+                <span class="db-speak-label">${t('speakBtn')}</span>
             </button>
+            <button class="dashbot-location-btn location-off" id="dashbotLocationBtn" type="button" title="${t('locTitleOff')}">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                    <circle cx="12" cy="10" r="3"/>
+                </svg>
+                <span class="db-loc-label">${t('locOff')}</span>
+            </button>
+        </div>
+        <div class="dashbot-input-wrap">
+            <input type="text" class="dashbot-input" id="dashbotInput" placeholder="${t('placeholder')}" autocomplete="off">
             <button class="dashbot-send-btn" id="dashbotSendBtn">
                 <svg id="dashbotSendIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -119,23 +285,23 @@ const html = `
 
 </div>
 
-<!-- Speaking mode: hands-free ("just talking"). NO window, NO box — the page
-     (map) stays fully visible and only the avatar sits in the screen corner
-     with its state ring, plus a small Keyboard pill to exit. The mic re-arms
-     itself after every answer, so the conversation flows like a call.
-     Transcript still accumulates in the hidden chat DOM. -->
+<!-- Speaking mode: the chat slides away and ONLY the avatar stays in the
+     screen corner. HOLD the avatar to talk, release to send; the answer is
+     spoken. A hint pill names the state, a Keyboard pill returns to chat.
+     The transcript still accumulates in the hidden chat DOM. -->
 <div class="dashbot-speakmode" id="dashbotSpeakMode">
-    <button class="dashbot-speak-exit" id="dashbotSpeakExit" title="Back to chat" type="button">
+    <button class="dashbot-speak-exit" id="dashbotSpeakExit" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="2" y="6" width="20" height="12" rx="2"/>
             <path d="M6 10h0M10 10h0M14 10h0M18 10h0M6 14h0M18 14h0"/><path d="M9 14h6"/>
         </svg>
-        <span>Keyboard</span>
+        <span class="db-speak-exit-label">${t('speakExit')}</span>
     </button>
-    <div class="dashbot-speak-stage" id="dashbotSpeakStage" role="button" tabindex="0" title="Tap to interrupt and talk">
+    <div class="dashbot-speak-stage" id="dashbotSpeakStage" role="button" tabindex="0" title="${t('pttTitle')}" aria-label="${t('pttIdle')}">
         <div class="dashbot-voice-ring"></div>
         <div class="dashbot-voice-avatar"></div>
     </div>
+    <div class="dashbot-speak-hint" id="dashbotSpeakHint">${t('pttIdle')}</div>
 </div>
 `;
 
@@ -152,12 +318,13 @@ const typing      = document.getElementById('dashbotTyping');
 const resetBtn    = document.getElementById('dashbotResetBtn');
 const locationBtn = document.getElementById('dashbotLocationBtn');
 const themeBtn    = document.getElementById('dashbotThemeBtn');
-const micBtn      = document.getElementById('dashbotMicBtn');
-const speakerBtn  = document.getElementById('dashbotSpeakerBtn');
-const voiceModeBtn = document.getElementById('dashbotVoiceModeBtn');
+const speakBtn    = document.getElementById('dashbotSpeakBtn');
 const speakModeEl = document.getElementById('dashbotSpeakMode');
 const speakStage  = document.getElementById('dashbotSpeakStage');
 const speakExit   = document.getElementById('dashbotSpeakExit');
+const speakHint   = document.getElementById('dashbotSpeakHint');
+const langBtn     = document.getElementById('dashbotLangBtn');
+const speakerBtn  = document.getElementById('dashbotSpeakerBtn');
 
 // The widget usually mounts INSIDE the dashboard's Leaflet map container, so
 // wheel/drag events over the chat bubble up to Leaflet — the MAP zooms and the
@@ -206,13 +373,14 @@ async function startSession() {
         // Server says whether the ElevenLabs proxy is configured; without it
         // spoken replies are silent and server-side STT is hidden.
         voiceAvailable = !!data.voice;
-        updateMicVisibility();
+        studyLocation = (data.study_location && data.study_location.lat != null) ? data.study_location : null;
+        updateSpeakVisibility();
         // Per-tab persistence: survives a RELOAD, dies with the tab. Without
         // this, every refresh minted a fresh session and wiped the
         // conversation history ("it forgets stuff" after each reload).
         try {
             sessionStorage.setItem('dashbot-session', JSON.stringify(
-                { id: sessionId, token: sessionToken, voice: voiceAvailable }));
+                { id: sessionId, token: sessionToken, voice: voiceAvailable, study: studyLocation }));
         } catch (e) {}
         return true;
     } catch (e) {
@@ -231,7 +399,21 @@ try {
         sessionId = saved.id;
         sessionToken = saved.token;
         voiceAvailable = !!saved.voice;
-        updateMicVisibility();
+        studyLocation = saved.study || null;
+        updateSpeakVisibility();
+        // Study mode is server state that changes with a restart (a different
+        // .env): refresh it for the restored session without minting a new one.
+        fetch(DASHBOT_BASE_URL + '/status')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (st) {
+                if (!st) return;
+                studyLocation = (st.study_location && st.study_location.lat != null) ? st.study_location : null;
+                try {
+                    sessionStorage.setItem('dashbot-session', JSON.stringify(
+                        { id: sessionId, token: sessionToken, voice: voiceAvailable, study: studyLocation }));
+                } catch (e) {}
+            })
+            .catch(function () {});
     }
 } catch (e) {}
 if (!sessionId) startSession();
@@ -241,20 +423,18 @@ function openChat() {
     isChatOpen = true;
     panel.classList.add('open');
     avatar.classList.add('hidden');
-    if (!voiceMode) input.focus();   // the input is hidden in voice mode
+    if (!speakMode) input.focus();
 }
 
 function closeChat() {
     isChatOpen = false;
+    if (speakMode) exitSpeakMode(false);   // next open starts in the chat view
     panel.classList.remove('open');
     avatar.classList.remove('hidden');
-    // Closing the panel always returns to a predictable state: next open
-    // starts in the chat view, and nothing keeps talking off-screen.
-    if (voiceMode) exitSpeakMode();
+    // Nothing keeps talking off-screen: drop a held recording, stop playback.
+    pttCancel();
+    speech.stopAll();
 }
-
-// Save welcome HTML so we can restore it on reset
-const welcomeHTML = document.getElementById('dashbotWelcome').outerHTML;
 
 async function resetChat() {
     // Clear backend history
@@ -271,11 +451,13 @@ async function resetChat() {
         } catch (_) {}
     }
     // Clear UI messages and restore welcome
-    messages.innerHTML = welcomeHTML;
+    messages.innerHTML = welcomeMarkup();
     // Re-bind welcome quick-actions (incl. the Share-my-location button)
     bindWelcomeButtons();
     hideTyping();
     setLoading(false);
+    pttCancel();
+    abortActiveRequest();
     speech.stopAll();
 }
 
@@ -292,7 +474,7 @@ function applyTheme(theme) {
     document.documentElement.classList.toggle('dashbot-dark', dark);
     if (themeBtn) {
         themeBtn.innerHTML = dark ? DB_SUN_SVG : DB_MOON_SVG;
-        themeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        themeBtn.title = dark ? t('themeToLight') : t('themeToDark');
     }
 }
 
@@ -319,18 +501,15 @@ input.addEventListener('focus', function () { panel.classList.add('listening'); 
 input.addEventListener('blur',  function () { panel.classList.remove('listening'); });
 
 // ---- Location ----
+var locationUIState = 'off';
 function updateLocationButton(state) {
+    locationUIState = state;
     locationBtn.classList.remove('location-off', 'location-loading', 'location-on', 'location-error');
     locationBtn.classList.add('location-' + state);
     // The label IS the affordance: say what tapping does (off) or what the
     // current state is (on/loading), not just tint an icon.
-    var labels = { off: 'Share location', loading: 'Locating…', on: 'Location on', error: 'No access' };
-    var titles = {
-        off: 'Tap to share your location',
-        loading: 'Getting your position…',
-        on: 'Location is shared — tap to turn off',
-        error: 'Location unavailable — tap to retry'
-    };
+    var labels = { off: t('locOff'), loading: t('locLoading'), on: t('locOn'), error: t('locError') };
+    var titles = { off: t('locTitleOff'), loading: t('locTitleLoading'), on: t('locTitleOn'), error: t('locTitleError') };
     var label = locationBtn.querySelector('.db-loc-label');
     if (label) label.textContent = labels[state] || labels.off;
     locationBtn.title = titles[state] || titles.off;
@@ -354,13 +533,25 @@ function toggleLocation() {
         locationEnabled = false;
         locationStatus = 'off';
         updateLocationButton('off');
-        showLocationToast('Location disabled');
+        showLocationToast(t('toastLocOff'));
+        return;
+    }
+    if (studyLocation) {
+        // Study mode: the server pins the position to one known place, so
+        // "sharing" is instant and never depends on indoor GPS or a permission
+        // prompt. The server anchors every turn there anyway; this keeps the
+        // button's state and the request consistent with that.
+        userLocation = { lat: studyLocation.lat, lon: studyLocation.lon };
+        locationEnabled = true;
+        locationStatus = 'on';
+        updateLocationButton('on');
+        showLocationToast(t('toastLocOn'));
         return;
     }
     if (!navigator.geolocation) {
         locationStatus = 'unsupported';
         updateLocationButton('error');
-        showLocationToast('Geolocation not supported');
+        showLocationToast(t('toastGeoUnsupported'));
         setTimeout(function() { updateLocationButton('off'); }, 3000);
         return;
     }
@@ -371,14 +562,14 @@ function toggleLocation() {
             locationEnabled = true;
             locationStatus = 'on';
             updateLocationButton('on');
-            showLocationToast('Location enabled');
+            showLocationToast(t('toastLocOn'));
         },
         function(err) {
-            var msg = 'Location error';
+            var msg = t('toastLocErr');
             locationStatus = 'unavailable';
-            if (err.code === 1) { msg = 'Location permission denied'; locationStatus = 'denied'; }
-            else if (err.code === 2) { msg = 'Location unavailable'; locationStatus = 'unavailable'; }
-            else if (err.code === 3) { msg = 'Location request timed out'; locationStatus = 'timeout'; }
+            if (err.code === 1) { msg = t('toastLocDenied'); locationStatus = 'denied'; }
+            else if (err.code === 2) { msg = t('toastLocUnavailable'); locationStatus = 'unavailable'; }
+            else if (err.code === 3) { msg = t('toastLocTimeout'); locationStatus = 'timeout'; }
             updateLocationButton('error');
             showLocationToast(msg);
             setTimeout(function() { updateLocationButton('off'); }, 3000);
@@ -392,37 +583,20 @@ locationBtn.addEventListener('click', toggleLocation);
 // ---- Helpers ----
 function scrollToBottom() { messages.scrollTop = messages.scrollHeight; }
 
-var thinkingPhrases = [
-    '\uD83C\uDF10 Scanning the city...',
-    '\uD83D\uDEE3\uFE0F Checking road conditions...',
-    '\uD83D\uDCCF Calculating distances...',
-    '\uD83D\uDCE1 Reading sensor data...',
-    '\uD83C\uDFDB\uFE0F Looking over campus buildings...',
-    '\uD83D\uDE97 Analyzing traffic flow...',
-    '\uD83C\uDD7F\uFE0F Checking parking availability...',
-    '\u26C5 Fetching weather updates...',
-    '\uD83D\uDE8B Mapping transit routes...',
-    '\u2699\uFE0F Querying smart city systems...',
-    '\uD83E\uDDE0 Processing your request...',
-    '\uD83D\uDCF6 Connecting to FIWARE sensors...',
-    '\uD83D\uDE8A Checking tram schedules...',
-    '\u2693 Surveying the Science Harbor...',
-    '\uD83D\uDDFA\uFE0F Exploring the map...',
-    '\uD83C\uDF21\uFE0F Reading temperatures...',
-];
 var typingTextEl = typing.querySelector('.dashbot-typing-text');
 var typingInterval = null;
 
 function showTyping() {
     typing.classList.add('show');
     panel.classList.add('thinking');
-    var idx = Math.floor(Math.random() * thinkingPhrases.length);
-    typingTextEl.textContent = thinkingPhrases[idx];
+    var phrases = t('thinkingPhrases');
+    var idx = Math.floor(Math.random() * phrases.length);
+    typingTextEl.textContent = phrases[idx];
     typingInterval = setInterval(function() {
-        idx = (idx + 1) % thinkingPhrases.length;
+        idx = (idx + 1) % phrases.length;
         typingTextEl.style.opacity = '0';
         setTimeout(function() {
-            typingTextEl.textContent = thinkingPhrases[idx];
+            typingTextEl.textContent = phrases[idx];
             typingTextEl.style.opacity = '1';
         }, 200);
     }, 2000);
@@ -448,14 +622,7 @@ function setLoading(on) {
     // Busy state just dims the (disabled) send button — no spinner. The
     // "Checking…" typing indicator already shows the assistant is working.
     sendBtn.disabled = on;
-    // Speaking mode: an answer that produced no speech (error, empty, muted
-    // proxy AND no browser voice) must still hand the turn back — return the
-    // ring to idle and re-arm the mic. When audio IS playing, the queue's
-    // own 'idle' event does this later instead.
-    if (!on && voiceMode && !speech.isActive()) {
-        setSpeakState('idle');
-        scheduleHandsFreeResume(600);
-    }
+    refreshSpeakUI();   // speaking mode: the avatar ring shows "thinking"
 }
 
 // ElevenLabs v3 audio tags ([sighs], [pause]) the voice-mode agent emits.
@@ -549,7 +716,7 @@ function formatBotMessage(content) {
 }
 
 function now() {
-    return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    return new Date().toLocaleTimeString(dbLang === 'de' ? 'de-DE' : 'en-US', { hour: '2-digit', minute: '2-digit' });
 }
 
 // ---- Messages ----
@@ -654,17 +821,17 @@ function renderTransitCard(card) {
 
     // Metric strip
     const metrics = [];
-    metrics.push('<span class="db-metric"><span class="db-metric-val">' + (card.total_stops || 0) + '</span><span class="db-metric-unit">stops</span></span>');
+    metrics.push('<span class="db-metric"><span class="db-metric-val">' + (card.total_stops || 0) + '</span><span class="db-metric-unit">' + t('cStops') + '</span></span>');
     if (transfers > 0) {
-        metrics.push('<span class="db-metric db-metric-warn"><span class="db-metric-val">' + transfers + '</span><span class="db-metric-unit">transfer' + (transfers > 1 ? 's' : '') + '</span></span>');
+        metrics.push('<span class="db-metric db-metric-warn"><span class="db-metric-val">' + transfers + '</span><span class="db-metric-unit">' + (transfers > 1 ? t('cTransfers') : t('cTransfer')) + '</span></span>');
     } else {
-        metrics.push('<span class="db-metric db-metric-ok"><span class="db-metric-val">Direct</span></span>');
+        metrics.push('<span class="db-metric db-metric-ok"><span class="db-metric-val">' + t('cDirect') + '</span></span>');
     }
     if (card.origin_walk_m) {
-        metrics.push('<span class="db-metric"><span class="db-metric-val">' + dbFmtDist(card.origin_walk_m) + '</span><span class="db-metric-unit">walk start</span></span>');
+        metrics.push('<span class="db-metric"><span class="db-metric-val">' + dbFmtDist(card.origin_walk_m) + '</span><span class="db-metric-unit">' + t('cWalkStart') + '</span></span>');
     }
     if (card.destination_walk_m) {
-        metrics.push('<span class="db-metric"><span class="db-metric-val">' + dbFmtDist(card.destination_walk_m) + '</span><span class="db-metric-unit">walk end</span></span>');
+        metrics.push('<span class="db-metric"><span class="db-metric-val">' + dbFmtDist(card.destination_walk_m) + '</span><span class="db-metric-unit">' + t('cWalkEnd') + '</span></span>');
     }
 
     // Timeline
@@ -676,7 +843,7 @@ function renderTransitCard(card) {
             '<div class="db-tl-marker"><div class="db-tl-dot"></div></div>' +
             '<div class="db-tl-body">' +
                 '<div class="db-tl-name">' + dbEscape(originName) + '</div>' +
-                '<div class="db-tl-sub">Start</div>' +
+                '<div class="db-tl-sub">' + t('cStart') + '</div>' +
             '</div>' +
         '</div>'
     );
@@ -688,7 +855,7 @@ function renderTransitCard(card) {
         const intermediate = (s.stops || []).slice(1, -1); // exclude from/to
         const stopsList = intermediate.length
             ? '<details class="db-tl-stops">' +
-                '<summary>' + intermediate.length + ' stop' + (intermediate.length > 1 ? 's' : '') + ' along the way</summary>' +
+                '<summary>' + t('cStopsAlong')(intermediate.length) + '</summary>' +
                 '<ol>' + intermediate.map(function(st) { return '<li>' + dbEscape(st) + '</li>'; }).join('') + '</ol>' +
               '</details>'
             : '';
@@ -697,7 +864,7 @@ function renderTransitCard(card) {
                 '<div class="db-tl-marker"><div class="db-tl-connector"></div></div>' +
                 '<div class="db-tl-body">' +
                     '<span class="' + badgeClass + '">' + icon + ' ' + dbEscape(s.line || '') + '</span>' +
-                    (s.direction ? '<div class="db-tl-dir"><span class="db-tl-dir-arrow">\u2192</span>' + dbEscape(s.direction) + (s.num_stops ? ' \u00B7 ride ' + s.num_stops + ' stops' : '') + '</div>' : '') +
+                    (s.direction ? '<div class="db-tl-dir"><span class="db-tl-dir-arrow">\u2192</span>' + dbEscape(s.direction) + (s.num_stops ? ' \u00B7 ' + t('cRide')(s.num_stops) : '') + '</div>' : '') +
                     stopsList +
                 '</div>' +
             '</div>'
@@ -710,7 +877,7 @@ function renderTransitCard(card) {
                     '<div class="db-tl-marker"><div class="db-tl-dot"></div></div>' +
                     '<div class="db-tl-body">' +
                         '<div class="db-tl-name">' + dbEscape(s.to || '') + '</div>' +
-                        '<div class="db-tl-sub">Transfer</div>' +
+                        '<div class="db-tl-sub">' + t('cTransferAt') + '</div>' +
                     '</div>' +
                 '</div>'
             );
@@ -724,7 +891,7 @@ function renderTransitCard(card) {
             '<div class="db-tl-marker"><div class="db-tl-dot db-tl-dot-end"></div></div>' +
             '<div class="db-tl-body">' +
                 '<div class="db-tl-name">' + dbEscape(destName) + '</div>' +
-                '<div class="db-tl-sub">Arrive</div>' +
+                '<div class="db-tl-sub">' + t('cArrive') + '</div>' +
             '</div>' +
         '</div>'
     );
@@ -743,7 +910,7 @@ function renderTransitCard(card) {
 
 function renderRouteCard(card) {
     const icons = { walking: '\uD83D\uDEB6', cycling: '\uD83D\uDEB4', driving: '\uD83D\uDE97' };
-    const modeLabel = (card.mode || '').charAt(0).toUpperCase() + (card.mode || '').slice(1);
+    const modeLabel = t('route_' + (card.mode || ''));
     const dirs = (card.directions || []).slice(0, 8).map(function(d) {
         const text = typeof d === 'string' ? d : (d.instruction || d.text || d.message || '');
         return text ? '<li>' + dbEscape(text) + '</li>' : '';
@@ -757,7 +924,7 @@ function renderRouteCard(card) {
         metrics.push('<span class="db-metric"><span class="db-metric-val">' + dbFmtDur(card.duration_s) + '</span></span>');
     }
     if (card.traffic_delay_s) {
-        metrics.push('<span class="db-metric db-metric-warn"><span class="db-metric-val">+' + dbFmtDur(card.traffic_delay_s) + '</span><span class="db-metric-unit">traffic</span></span>');
+        metrics.push('<span class="db-metric db-metric-warn"><span class="db-metric-val">+' + dbFmtDur(card.traffic_delay_s) + '</span><span class="db-metric-unit">' + t('cTrafficUnit') + '</span></span>');
     }
 
     // ---- Live real-time chips: driving \u2192 traffic + parking;
@@ -765,19 +932,19 @@ function renderRouteCard(card) {
     var live = [];
 
     if (card.congestion) {
-        var cMap = { clear: ['Clear', 'db-live-ok'], moderate: ['Slow', 'db-live-warn'], heavy: ['Heavy', 'db-live-bad'] };
+        var cMap = { clear: [t('cTrafficClear'), 'db-live-ok'], moderate: [t('cTrafficSlow'), 'db-live-warn'], heavy: [t('cTrafficHeavy'), 'db-live-bad'] };
         var c = cMap[card.congestion] || [card.congestion, ''];
-        live.push('<span class="db-live-chip ' + c[1] + '">\uD83D\uDEA6 ' + c[0] + ' traffic</span>');
+        live.push('<span class="db-live-chip ' + c[1] + '">\uD83D\uDEA6 ' + c[0] + '</span>');
     }
     if (card.parking && card.parking.free != null) {
-        var pTxt = '\uD83C\uDD7F\uFE0F ' + card.parking.free + ' free';
+        var pTxt = '\uD83C\uDD7F\uFE0F ' + card.parking.free + ' ' + t('cFree');
         if (card.parking.distance_m != null) pTxt += ' \u00B7 ' + dbFmtDist(card.parking.distance_m);
         live.push('<span class="db-live-chip">' + dbEscape(pTxt) + '</span>');
     }
     if (card.air && card.air.level) {
-        var aMap = { good: ['Good', 'db-live-ok'], moderate: ['Moderate', 'db-live-warn'], poor: ['Poor', 'db-live-bad'] };
+        var aMap = { good: [t('cAirGood'), 'db-live-ok'], moderate: [t('cAirModerate'), 'db-live-warn'], poor: [t('cAirPoor'), 'db-live-bad'] };
         var a = aMap[card.air.level] || [card.air.level, ''];
-        live.push('<span class="db-live-chip ' + a[1] + '"><span class="db-dot"></span>' + a[0] + ' air</span>');
+        live.push('<span class="db-live-chip ' + a[1] + '"><span class="db-dot"></span>' + a[0] + '</span>');
     }
     if (card.weather && (card.weather.condition || card.weather.temp_c != null)) {
         var wMap = { rain: '\uD83C\uDF27\uFE0F', windy: '\uD83D\uDCA8', clear: '\u2600\uFE0F' };
@@ -793,13 +960,13 @@ function renderRouteCard(card) {
         '<div class="db-card-head">' +
             '<div class="db-card-title">' +
                 '<span class="db-card-icon">' + (icons[card.mode] || '\uD83D\uDDFA\uFE0F') + '</span>' +
-                '<span>' + modeLabel + ' route</span>' +
+                '<span>' + modeLabel + '</span>' +
             '</div>' +
             liveBadge +
         '</div>' +
         (metrics.length ? '<div class="db-metrics">' + metrics.join('') + '</div>' : '') +
         liveRow +
-        (dirs ? '<details class="db-route-directions"><summary>Turn-by-turn directions</summary><ol>' + dirs + '</ol></details>' : '') +
+        (dirs ? '<details class="db-route-directions"><summary>' + t('cDirections') + '</summary><ol>' + dirs + '</ol></details>' : '') +
     '</div>';
 }
 
@@ -808,7 +975,11 @@ function renderRouteCard(card) {
 // gracefully when the page has no Leaflet map (e.g. Dashbot's standalone chat
 // page), so the widget stays self-contained and infra-free.
 let dashbotMapOverlay = null;   // place markers
-let routePolyline = null;       // the single route line currently on the map
+let routeLayers = [];           // the ONE route line on the map (+ its flow overlay for driving)
+let routeCoords = null;         // that route's FULL geometry (the line may still be revealing)
+let routeTraveler = null;       // the mode chip riding the line's tip (walker / cyclist / car)
+let routeAnim = null;           // requestAnimationFrame handle of the running reveal
+let currentRouteMode = null;    // mode of the line on the map (its card gets the highlight)
 let defaultRouteDrawn = false;  // has the default (walking) route been auto-shown this answer?
 let dashbotPlaceMarkers = {};   // "lat,lon" -> marker, so a place card can refocus its pin
 
@@ -820,20 +991,57 @@ function getLeafletMap() {
 }
 
 function getMapOverlay(m) {
-    if (!dashbotMapOverlay) { dashbotMapOverlay = L.layerGroup().addTo(m); }
+    // A featureGroup (not layerGroup): it has getBounds(), which the framing
+    // of pins next to a route relies on.
+    if (!dashbotMapOverlay) { dashbotMapOverlay = L.featureGroup().addTo(m); }
     return dashbotMapOverlay;
+}
+
+function reducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+    catch (e) { return false; }
+}
+
+function cancelRouteAnim() {
+    if (routeAnim != null) { try { cancelAnimationFrame(routeAnim); } catch (e) {} routeAnim = null; }
+}
+
+// Take the current route (line, flow overlay, traveler) off the map, stopping
+// a reveal that is still running.
+function removeRouteLayers() {
+    cancelRouteAnim();
+    const m = getLeafletMap();
+    routeLayers.forEach(function (l) { try { if (m) m.removeLayer(l); } catch (e) {} });
+    routeLayers = [];
+    try { if (m && routeTraveler) m.removeLayer(routeTraveler); } catch (e) {}
+    routeTraveler = null;
+    routeCoords = null;
+    currentRouteMode = null;
 }
 
 function clearMapOverlay() {
     try { if (dashbotMapOverlay) dashbotMapOverlay.clearLayers(); } catch (e) {}
-    const m = getLeafletMap();
-    try { if (m && routePolyline) m.removeLayer(routePolyline); } catch (e) {}
-    routePolyline = null;
+    removeRouteLayers();
     defaultRouteDrawn = false;
     dashbotPlaceMarkers = {};
 }
 
-const DB_ROUTE_COLORS = { walking: '#2e7d32', cycling: '#1565c0', driving: '#7b1fa2' };
+// Route line colors (match the route cards' accent gradients).
+const DB_ROUTE_COLORS = { walking: '#16a34a', cycling: '#0ea5e9', driving: '#7c3aed' };
+// Live congestion tints the DRIVING line (the card carries `congestion`).
+const DB_CONGESTION_COLORS = { moderate: '#f59e0b', heavy: '#ef4444' };
+// Per-mode look and pacing. Textures: walking = round dots that read as
+// footsteps, cycling = short dashes, driving = solid with light dashes flowing
+// along it (direction of travel); all three textures march along the line
+// (CSS, see .db-route-line-*). `duration` is the one-time REVEAL at ~2.5 km
+// and `lap` the time of each LOOP of the chip along the finished line — both
+// scaled by trip length within [0.75, 1.5]: the walker is unhurried, the
+// bike brisk, the car quick (the reveal also eases out for the car).
+const DB_MODE_STYLE = {
+    walking: { emoji: '🚶', weight: 6, dashArray: '1 13',  duration: 1600, lap: 7000, ease: 'inOut' },
+    cycling: { emoji: '🚴', weight: 5, dashArray: '10 11', duration: 1150, lap: 5000, ease: 'inOut' },
+    driving: { emoji: '🚗', weight: 5, dashArray: null,    duration: 850,  lap: 3800, ease: 'out', flow: true }
+};
 
 // Category → pin/card emoji. `kind` is detected server-side (api.py _pin_kind)
 // from the record's type fields; "place" is the neutral fallback.
@@ -859,63 +1067,284 @@ function pinIcon(kind) {
     });
 }
 
+function travelerIcon(mode, color) {
+    const st = DB_MODE_STYLE[mode] || DB_MODE_STYLE.walking;
+    return L.divIcon({
+        className: 'db-traveler',
+        html: '<div class="db-traveler-chip" style="--db-route-color:' + color + '">' + st.emoji + '</div>',
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+    });
+}
+
+function dbMeters(lat1, lon1, lat2, lon2) {
+    // Equirectangular — plenty at city scale, and cheap enough to run per frame.
+    const kLat = 111320, kLon = 111320 * Math.cos(lat1 * Math.PI / 180);
+    const dy = (lat2 - lat1) * kLat, dx = (lon2 - lon1) * kLon;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Cumulative distance (m) along the route at every vertex.
+function dbPathMetrics(coords) {
+    const cum = [0];
+    for (let i = 1; i < coords.length; i++) {
+        cum.push(cum[i - 1] + dbMeters(coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]));
+    }
+    return cum;
+}
+
+// Index of the first vertex at or beyond `d` metres from the origin.
+function dbSegmentEnd(cum, d) {
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < d) i++;
+    return i;
+}
+
+// The point `d` metres along the route (interpolated on its segment).
+function dbPointAt(coords, cum, d) {
+    const total = cum[cum.length - 1];
+    if (d <= 0) return coords[0];
+    if (d >= total) return coords[coords.length - 1];
+    const i = dbSegmentEnd(cum, d);
+    const seg = cum[i] - cum[i - 1];
+    const f = seg > 0 ? Math.max(0, Math.min(1, (d - cum[i - 1]) / seg)) : 0;
+    const a = coords[i - 1], b = coords[i];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+}
+
+// The route up to `d` metres from the origin, ending in an interpolated point
+// on the current segment — the moving tip of the reveal.
+function dbPathPrefix(coords, cum, d) {
+    const total = cum[cum.length - 1];
+    if (d >= total) return coords.slice();
+    const out = coords.slice(0, dbSegmentEnd(cum, d));
+    out.push(dbPointAt(coords, cum, d));
+    return out;
+}
+
+function dbEase(kind, t) {
+    if (kind === 'out') return 1 - Math.pow(1 - t, 3);
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+// fitBounds padding that keeps the framed area clear of the chat panel, which
+// floats over the map's right side while open (25vw on the dashboard) — the
+// destination and the parked traveler must not land underneath it. Measured
+// from the panel's actual overlap with the map container, so it is right for
+// the dashboard, the standalone page, and speaking mode (panel slid away).
+function mapFitPadding(m) {
+    let right = 0;
+    try {
+        if (isChatOpen && panel) {
+            const mr = m.getContainer().getBoundingClientRect();
+            const pr = panel.getBoundingClientRect();
+            if (pr.width && pr.bottom > mr.top && pr.top < mr.bottom) {
+                right = Math.max(0, Math.min(mr.right, pr.right) - Math.max(mr.left, pr.left));
+            }
+            if (right > mr.width * 0.6) right = 0;   // panel covers the map (mobile): nothing to clear
+        }
+    } catch (e) {}
+    return { paddingTopLeft: [40, 40], paddingBottomRight: [40 + right, 40] };
+}
+
+// Frame the whole route (its FULL extent, even while the reveal is still
+// drawing) together with any pins already on the map.
+function fitRouteView(m, coords) {
+    try {
+        const b = L.latLngBounds(coords);
+        if (dashbotMapOverlay && dashbotMapOverlay.getLayers().length) b.extend(dashbotMapOverlay.getBounds());
+        m.fitBounds(b, Object.assign({ maxZoom: 17 }, mapFitPadding(m)));
+    } catch (e) {}
+}
+
+// Reduced motion only (the chip is parked for good): a pin sitting on the
+// destination (find_nearest, a resolved place) is the destination marker, and
+// the parked chip would only stack on top of it. While looping, the chip just
+// passes the pin each lap.
+function hideTravelerIfPinned() {
+    if (!routeTraveler || !routeCoords || routeAnim != null) return;
+    const end = routeCoords[routeCoords.length - 1];
+    for (const key in dashbotPlaceMarkers) {
+        try {
+            const ll = dashbotPlaceMarkers[key].getLatLng();
+            if (dbMeters(ll.lat, ll.lng, end[0], end[1]) < 25) {
+                const m = getLeafletMap();
+                if (m) m.removeLayer(routeTraveler);
+                routeTraveler = null;
+                return;
+            }
+        } catch (e) {}
+    }
+}
+
 function drawOnMap(card) {
     // Place pins only — routes are handled by drawRoute/selectRoute so the map
     // never shows more than ONE route line at a time.
     const m = getLeafletMap();
     if (!m || !window.L || !card) return;
     if (card.type !== 'place' || card.lat == null || card.lon == null) return;
+    const key = card.lat.toFixed(5) + ',' + card.lon.toFixed(5);
+    if (dashbotPlaceMarkers[key]) return;   // already pinned (drawn at card arrival)
     try {
         const overlay = getMapOverlay(m);
         const marker = L.marker([card.lat, card.lon], { icon: pinIcon(card.kind) });
         if (card.name) marker.bindPopup(String(card.name));
         overlay.addLayer(marker);
-        dashbotPlaceMarkers[card.lat.toFixed(5) + ',' + card.lon.toFixed(5)] = marker;
-        // Single pin → center + open popup; multiple → frame them all.
-        if (overlay.getLayers().length <= 1) {
-            m.setView([card.lat, card.lon], Math.max(m.getZoom(), 16));
+        dashbotPlaceMarkers[key] = marker;
+        if (overlay.getLayers().length <= 1 && !routeCoords) {
+            // Single pin, no route → center + open popup.
+            m.fitBounds(L.latLng(card.lat, card.lon).toBounds(60),
+                        Object.assign({ maxZoom: Math.max(m.getZoom(), 16) }, mapFitPadding(m)));
             marker.openPopup();
         } else {
-            try { m.fitBounds(overlay.getBounds(), { padding: [40, 40], maxZoom: 17 }); } catch (e) {}
+            // Several pins, or a route on the map → frame everything.
+            const b = overlay.getBounds();
+            if (routeCoords) b.extend(L.latLngBounds(routeCoords));
+            m.fitBounds(b, Object.assign({ maxZoom: 17 }, mapFitPadding(m)));
         }
+        hideTravelerIfPinned();
     } catch (e) {
         console.warn('Dashbot: map draw failed', e);
     }
 }
 
+// After the reveal the chip keeps travelling the finished line, lap after
+// lap: it dwells at the destination (with the park pop), fades out, and
+// reappears at the origin. Time-based, so throttled frames only skip ahead.
+// Runs until the route is replaced or cleared (a new question, a mode click).
+function startTravelerLoop(traveler, coords, cum, total, st) {
+    const lap = st.lap * Math.min(1.5, Math.max(0.75, total / 2500));
+    const dwell = 900;    // ms at the destination between laps
+    const fade = 250;     // ms hidden at the end of the dwell — masks the jump back
+    const end = coords[coords.length - 1];
+    let t0 = null, paused = true;
+    function loop(ts) {
+        if (t0 === null) t0 = ts - lap;   // begin in the dwell: the reveal just parked the chip
+        const e = (ts - t0) % (lap + dwell);
+        let el = null;
+        try { el = traveler.getElement(); } catch (err) {}
+        if (e < lap) {
+            if (paused) {
+                paused = false;
+                if (el) { el.classList.remove('db-traveler-parked'); el.style.opacity = ''; }
+            }
+            traveler.setLatLng(dbPointAt(coords, cum, (e / lap) * total));
+        } else {
+            if (!paused) {
+                paused = true;
+                traveler.setLatLng(end);
+                if (el) el.classList.add('db-traveler-parked');
+            }
+            if (el) el.style.opacity = (e > lap + dwell - fade) ? '0' : '';
+        }
+        routeAnim = requestAnimationFrame(loop);
+    }
+    routeAnim = requestAnimationFrame(loop);
+}
+
 // Always exactly ONE route line. Drawing a mode replaces the previous line.
-// A straight-line connector (router gave no path geometry) is drawn dashed so
-// it reads as "from here to there", not as the actual path.
-function drawRoute(mode, coords, straightLine) {
+// The line is REVEALED from origin to destination with the mode's chip riding
+// its tip; the chip then keeps looping along the line (startTravelerLoop)
+// while the line's texture marches along it. A straight-line connector
+// (router gave no path geometry) stays a static dashed line, so an estimate
+// never looks like a real path. Reduced motion → everything lands at once,
+// nothing loops.
+function drawRoute(mode, coords, straightLine, card) {
     const m = getLeafletMap();
     if (!m || !window.L || !Array.isArray(coords) || coords.length < 2) return;
-    try { if (routePolyline) m.removeLayer(routePolyline); } catch (e) {}
-    routePolyline = L.polyline(coords, {
-        color: DB_ROUTE_COLORS[mode] || '#7a003f', weight: 5, opacity: 0.9,
-        dashArray: straightLine ? '8 10' : null,
+    removeRouteLayers();
+    currentRouteMode = mode;
+    routeCoords = coords;
+    const st = DB_MODE_STYLE[mode] || DB_MODE_STYLE.walking;
+    const tint = (mode === 'driving' && card) ? DB_CONGESTION_COLORS[card.congestion] : null;
+    const color = tint || DB_ROUTE_COLORS[mode] || '#7a003f';
+    const animate = !straightLine && !reducedMotion();
+    const first = animate ? [coords[0]] : coords;
+
+    routeLayers.push(L.polyline(first, {
+        color: color, weight: st.weight, opacity: 0.9,
+        lineCap: 'round', lineJoin: 'round',
+        dashArray: straightLine ? '8 10' : st.dashArray,
+        className: animate ? ('db-route-line db-route-line-' + mode) : null,
+        interactive: false
+    }).addTo(m));
+    if (st.flow && animate) {
+        // Light dashes marching along the solid line: the direction of travel
+        // (CSS animates stroke-dashoffset on the path; see .db-route-flow).
+        routeLayers.push(L.polyline(first, {
+            color: '#ffffff', weight: 2, opacity: 0.85,
+            dashArray: '6 14', lineCap: 'round', lineJoin: 'round',
+            className: 'db-route-flow', interactive: false
+        }).addTo(m));
+    }
+    fitRouteView(m, coords);
+
+    if (straightLine) return;   // an estimate: no traveler, no reveal
+    routeTraveler = L.marker(coords[0], {
+        icon: travelerIcon(mode, color), interactive: false, zIndexOffset: 1000
     }).addTo(m);
+    if (!animate) {
+        routeTraveler.setLatLng(coords[coords.length - 1]);
+        hideTravelerIfPinned();
+        return;
+    }
+
+    const cum = dbPathMetrics(coords);
+    const total = cum[cum.length - 1];
+    const duration = st.duration * Math.min(1.5, Math.max(0.75, total / 2500));
+    const layers = routeLayers.slice();
+    const traveler = routeTraveler;
+    let start = null;
+    function frame(ts) {
+        if (start === null) start = ts;
+        const p = total > 0 ? Math.min(1, (ts - start) / duration) : 1;
+        const pts = dbPathPrefix(coords, cum, dbEase(st.ease, p) * total);
+        layers.forEach(function (l) { l.setLatLngs(pts); });
+        traveler.setLatLng(pts[pts.length - 1]);
+        if (p < 1) {
+            routeAnim = requestAnimationFrame(frame);
+        } else {
+            try { traveler.getElement().classList.add('db-traveler-parked'); } catch (e) {}
+            startTravelerLoop(traveler, coords, cum, total, st);
+        }
+    }
+    routeAnim = requestAnimationFrame(frame);
+}
+
+// Outline the card whose mode is on the map, in that mode's color.
+function highlightRouteCard(el, mode) {
     try {
-        const layers = [routePolyline].concat(dashbotMapOverlay ? dashbotMapOverlay.getLayers() : []);
-        m.fitBounds(L.featureGroup(layers).getBounds(), { padding: [40, 40], maxZoom: 17 });
+        const group = el.closest('.db-cards') || el.parentElement;
+        if (!group) return;
+        group.querySelectorAll('.db-card-route').forEach(function (c) {
+            if (c === el) {
+                c.style.outline = '2px solid ' + (DB_ROUTE_COLORS[mode] || '#7a003f');
+                c.style.outlineOffset = '1px';
+            } else {
+                c.style.outline = 'none';
+            }
+        });
     } catch (e) {}
 }
 
 // Draw the chosen mode's line and highlight its card among its siblings.
-function selectRoute(el, mode, coords, straightLine) {
-    drawRoute(mode, coords, straightLine);
-    try {
-        const group = el.closest('.db-cards') || el.parentElement;
-        if (group) {
-            group.querySelectorAll('.db-card-route').forEach(function (c) {
-                if (c === el) {
-                    c.style.outline = '2px solid ' + (DB_ROUTE_COLORS[mode] || '#7a003f');
-                    c.style.outlineOffset = '1px';
-                } else {
-                    c.style.outline = 'none';
-                }
-            });
-        }
-    } catch (e) {}
+function selectRoute(el, card) {
+    drawRoute(card.mode, card.geometry, card.straight_line, card);
+    highlightRouteCard(el, card.mode);
+}
+
+// Put a card on the map the moment it ARRIVES, while the answer text is still
+// typing out: pins drop and the route reveals as the user reads. The card's
+// panel rendering follows once the text lands (renderCard), which then only
+// wires clicks and the highlight instead of drawing again.
+function previewCardOnMap(card) {
+    if (!card || !getLeafletMap()) return;
+    if (card.type === 'place') { drawOnMap(card); return; }
+    if (card.type === 'route' && !defaultRouteDrawn
+            && Array.isArray(card.geometry) && card.geometry.length > 1) {
+        drawRoute(card.mode, card.geometry, card.straight_line, card);
+        defaultRouteDrawn = true;
+    }
 }
 
 // Pan/zoom the host map to a pinned place and open its popup (place-card click).
@@ -923,7 +1352,8 @@ function selectPlace(lat, lon) {
     const m = getLeafletMap();
     if (!m || !window.L) return;
     try {
-        m.setView([lat, lon], Math.max(m.getZoom(), 17));
+        m.fitBounds(L.latLng(lat, lon).toBounds(60),
+                    Object.assign({ maxZoom: Math.max(m.getZoom(), 17) }, mapFitPadding(m)));
         const marker = dashbotPlaceMarkers[lat.toFixed(5) + ',' + lon.toFixed(5)];
         if (marker && marker.openPopup) marker.openPopup();
     } catch (e) {}
@@ -934,16 +1364,17 @@ function renderPlaceCard(card) {
         '<div class="db-card-head">' +
             '<div class="db-card-title">' +
                 '<span class="db-card-icon">' + kindEmoji(card.kind) + '</span>' +
-                '<span>' + dbEscape(card.name || 'Location') + '</span>' +
+                '<span>' + dbEscape(card.name || t('cLocation')) + '</span>' +
             '</div>' +
         '</div>' +
-        '<div class="db-tl-sub">Shown on the map</div>' +
+        '<div class="db-tl-sub">' + t('cShownOnMap') + '</div>' +
     '</div>';
 }
 
 function renderCard(container, card) {
     if (!container || !card || !card.type) return;
-    // Draw the geo overlay on the host Leaflet map (dashboard) when present.
+    // Draw the geo overlay on the host Leaflet map (dashboard) when present —
+    // a no-op for anything previewCardOnMap already put there at card arrival.
     drawOnMap(card);
     let html = '';
     switch (card.type) {
@@ -961,18 +1392,24 @@ function renderCard(container, card) {
         if (isRoute) {
             el.setAttribute('data-mode', card.mode);
             el.style.cursor = 'pointer';
-            el.title = 'Show this route on the map';
-            el.addEventListener('click', function () { selectRoute(el, card.mode, card.geometry, card.straight_line); });
+            el.title = t('cShowRoute');
+            el.addEventListener('click', function () { selectRoute(el, card); });
         } else if (card.type === 'place' && card.lat != null && card.lon != null && getLeafletMap()) {
             el.style.cursor = 'pointer';
-            el.title = 'Show on the map';
+            el.title = t('cShowPlace');
             el.addEventListener('click', function () { selectPlace(card.lat, card.lon); });
         }
         container.appendChild(el);
-        // Show ONE route by default (walking — route cards arrive walking-first).
-        if (isRoute && !defaultRouteDrawn) {
-            selectRoute(el, card.mode, card.geometry, card.straight_line);
-            defaultRouteDrawn = true;
+        if (isRoute) {
+            // Show ONE route by default (walking — route cards arrive walking-first).
+            // Usually it is already revealing on the map since card arrival; then
+            // just mark its card as the selected one.
+            if (!defaultRouteDrawn) {
+                selectRoute(el, card);
+                defaultRouteDrawn = true;
+            } else if (currentRouteMode === card.mode) {
+                highlightRouteCard(el, card.mode);
+            }
         }
         requestAnimationFrame(function() { el.classList.add('db-card-shown'); });
     }
@@ -984,15 +1421,15 @@ function buildSuggestions(cards) {
     (cards || []).forEach(function (c) { if (c && c.type) types[c.type] = true; });
     var s = [];
     if (types.place) {
-        s.push({ icon: '🧭', label: 'Directions there', q: 'How do I get there?' });
-        s.push({ icon: '📍', label: "What's nearby?", q: "What's around there?" });
+        s.push({ icon: '🧭', label: t('sDirections'), q: t('sDirectionsQ') });
+        s.push({ icon: '📍', label: t('sNearby'), q: t('sNearbyQ') });
     }
     // Route answers already show every mode (walk/bike/tram/drive) with live
     // conditions, so they get no follow-up chips — not even the generic fallback.
     var hadCards = !!(types.place || types.route || types.transit_route);
     if (!s.length && !hadCards) {
-        s.push({ icon: '🅿️', label: 'Parking nearby', q: 'Available parking near me?' });
-        s.push({ icon: '⛅', label: 'Weather now', q: "What's the weather right now?" });
+        s.push({ icon: '🅿️', label: t('sParking'), q: t('sParkingQ') });
+        s.push({ icon: '⛅', label: t('sWeather'), q: t('sWeatherQ') });
     }
     // de-dupe by label, cap at 3
     var seen = {}, out = [];
@@ -1023,88 +1460,32 @@ function renderSuggestions(msgDiv, suggestions) {
 }
 
 // ============================================================================
-// Voice — STT (mic button) + TTS (spoken replies) via the backend /voice/*
+// Voice — STT (push-to-talk) + TTS (spoken replies) via the backend /voice/*
 // proxy (the ElevenLabs key never reaches the browser).
 //
 // Latency design: an agent turn takes ~6-7s (tool calls), and silence that
 // long sounds robotic. So:
-//   1. The instant a voice question is sent, a short RULE-BASED
-//      acknowledgment plays ("Hmm, okay. Let me check the city."). The
-//      phrases are fixed strings, so the backend disk-caches their audio —
-//      after first use they play with zero synthesis latency. (An
-//      LLM-generated filler can't do this job: the model spends those
-//      seconds calling tools BEFORE emitting its first token.)
+//   1. The server reacts to what the user SAID with a tiny, fast side
+//      LLM call ("Ooh, the Mensa, one sec") that runs in parallel with the
+//      agent and arrives as a `reaction` SSE event. It is spoken through the
+//      fast ElevenLabs model only if the real answer hasn't started talking
+//      yet; small talk gets no reaction at all (the answer itself is instant).
+//      This replaced keyword-picked canned phrases, which could not tell
+//      "thank you for the weather" from a weather question.
 //   2. The real answer is synthesized SENTENCE BY SENTENCE as tokens
 //      stream in, so speech starts when the first sentence exists — not
 //      when the whole reply is done. Fetches run in parallel; a
 //      sequential audio queue preserves order; `previous_text` keeps the
 //      prosody continuous across chunks.
 //
-// STT prefers the browser's Web Speech API (free, near-instant); browsers
-// without it (Firefox, some Safari) record via MediaRecorder and transcribe
-// through the backend's ElevenLabs Scribe proxy.
+// STT records with MediaRecorder and transcribes through the backend's
+// ElevenLabs Scribe proxy (accents, German street names) — the browser's
+// built-in Web Speech engine is only an opt-in (`initDashbot({ stt: 'browser' })`)
+// or the fallback where MediaRecorder is unavailable.
 // ============================================================================
 
-// ---- Acknowledgment phrases (rule-based, keyword-routed) ----
-// SHORT, calm acks (~1.5-2.5s of audio). The queue plays strictly in order,
-// so a long ack would BLOCK the answer even when the agent is already done —
-// short ack now, and the adaptive fillers below cover any longer wait. No
-// tags, no theatrics: the ack sets the emotional baseline for the answer.
-const ACK_PHRASES = {
-    en: {
-        route:   ['Okay, let me plan that route…', 'One sec, checking the way there…', 'Alright, let me look at the routes…'],
-        live:    ['Okay, checking the live data…', 'One sec, reading the sensors…', 'Let me get the latest readings…'],
-        place:   ['Okay, let me look that up…', 'Hmm, let me find that…', 'One sec…'],
-        // Content-free on purpose: generic fires for anything unrecognized,
-        // so it must never assume the question was about the city.
-        generic: ['Hmm, okay… one sec…', 'Alright, let me think…', 'Mmm, one moment…']
-    },
-    de: {
-        route:   ['Okay, ich plane kurz die Route…', 'Einen Moment, ich schaue nach dem Weg…'],
-        live:    ['Okay, ich schaue auf die Live-Daten…', 'Einen Moment, ich lese die Sensoren…'],
-        place:   ['Okay, ich suche das kurz raus…', 'Hmm, mal sehen…'],
-        generic: ['Hmm, okay… einen Moment…', 'Alles klar, Sekunde…', 'Mmm, Moment…']
-    }
-};
-// Adaptive fillers: repeat every few seconds ONLY while the answer still
-// hasn't reached the audio queue — total wait coverage grows with the actual
-// latency instead of one long fixed clip delaying a fast answer.
-const FILLER_PHRASES = {
-    en: ['Mmm…', 'Hmm… almost there…', 'Just a moment…', 'One sec…'],
-    de: ['Mmm…', 'Hmm… gleich…', 'Einen Augenblick…', 'Moment…']
-};
-let lastAckPhrase = '';
-
-function classifyAck(msg) {
-    const m = (msg || '').toLowerCase().trim();
-    // Small talk gets NO ack ('none'): greetings answer in a beat (no tool
-    // calls), and "let me check the city" over a "hello" is exactly wrong.
-    if (/^(hi|hello|hey|yo|hallo|moin|servus|na)\b/.test(m) ||
-        /^(thanks|thank you|thx|danke|cheers|ok|okay|cool|nice|great|bye|goodbye|tschüss|ciao)\b/.test(m) ||
-        /^(good (morning|afternoon|evening|night)|guten (morgen|tag|abend)|gute nacht)\b/.test(m) ||
-        /(how are you|wie geht)/.test(m)) return 'none';
-    if (/(route|get to|go to|come to|reach|directions|way to|nearest|closest|how far|tram|bus|drive|walk|cycle|verbindung|weg nach|wie komme)/.test(m)) return 'route';
-    if (/(weather|temperature|rain|wind|parking|traffic|air quality|pollution|menu|mensa|water level|wetter|temperatur|regen|parkplatz|verkehr|luft|speiseplan)/.test(m)) return 'live';
-    if (/(where is|where's|what is|what's|find|show me|open now|opening|wo ist|was ist|zeig|geöffnet)/.test(m)) return 'place';
-    return 'generic';
-}
-
-function pickAckPhrase(kind) {
-    const table = ACK_PHRASES[DB_LANG] || ACK_PHRASES.en;
-    const list = table[kind] || table.generic;
-    // Avoid saying the exact same thing twice in a row.
-    let pick = list[Math.floor(Math.random() * list.length)];
-    if (list.length > 1 && pick === lastAckPhrase) {
-        pick = list[(list.indexOf(pick) + 1) % list.length];
-    }
-    lastAckPhrase = pick;
-    return pick;
-}
-
-function pickFillerPhrase() {
-    const list = FILLER_PHRASES[DB_LANG] || FILLER_PHRASES.en;
-    return list[Math.floor(Math.random() * list.length)];
-}
+// (Rule-based acknowledgment / filler phrases removed: reactions now come
+// from the server per turn — see the `reaction` SSE event in sendMessage.)
 
 // ---- Text cleanup: chat markdown → speakable prose ----
 function speechClean(text) {
@@ -1127,25 +1508,35 @@ const speech = (function () {
     const queue = [];
     let playing = false;
     let generation = 0;
-    let currentAudio = null;
+    let currentStop = null;   // cuts + settles the clip playing right now
 
     function playBlob(blob) {
         return new Promise(function (resolve) {
             const url = URL.createObjectURL(blob);
             const audio = new Audio(url);
-            currentAudio = audio;
+            let settled = false;
             function finish() {
+                if (settled) return;
+                settled = true;
+                if (currentStop === stop) currentStop = null;
                 URL.revokeObjectURL(url);
-                if (currentAudio === audio) currentAudio = null;
                 resolve();
             }
+            // pause() fires neither `ended` nor `error`, so an interrupt MUST
+            // settle this promise itself — otherwise `drain` waits forever and
+            // every later clip is silently dropped (the old wedge bug).
+            function stop() {
+                try { audio.pause(); } catch (e) {}
+                finish();
+            }
+            currentStop = stop;
             audio.onended = finish;
             audio.onerror = finish;
             audio.play().catch(finish);   // autoplay blocked etc. — never wedge the queue
         });
     }
 
-    let onActivity = null;   // voice mode listens: ('speak', text) | ('idle')
+    let onActivity = null;   // ('speak', text) as each clip starts | ('idle') when drained
 
     async function drain() {
         if (playing) return;
@@ -1158,7 +1549,7 @@ const speech = (function () {
                 try { blob = await item.blobPromise; } catch (e) {}
                 if (item.gen !== generation) continue;   // stopped while fetching
                 if (!blob) continue;   // TTS failed/unconfigured → this chunk is silence
-                if (onActivity) onActivity('speak', item.text);
+                if (onActivity) onActivity('speak', item.text, item.meta);
                 await playBlob(blob);
             }
         } finally {
@@ -1170,39 +1561,79 @@ const speech = (function () {
     return {
         // blobPromise resolves to an MP3 Blob, or null on any failure — a
         // null chunk is simply skipped (silence). `text` feeds the activity
-        // listener (speaking-mode state), not any fallback voice.
-        enqueue: function (blobPromise, text) {
-            queue.push({ gen: generation, blobPromise: blobPromise, text: text });
+        // listener (push-to-talk label), not any fallback voice.
+        enqueue: function (blobPromise, text, meta) {
+            queue.push({ gen: generation, blobPromise: blobPromise, text: text, meta: meta || null });
             drain();
         },
+        // Interrupt: drop the queue, cut the playing clip, and bump the
+        // generation so stale producers (an old answer's chunker, a pending
+        // ack timer, an in-flight fetch) are ignored when they land.
         stopAll: function () {
             generation++;
             queue.length = 0;
-            try { if (currentAudio) { currentAudio.pause(); currentAudio = null; } } catch (e) {}
+            if (currentStop) currentStop();
         },
+        gen: function () { return generation; },
         isActive: function () { return playing; },
-        // Single observer is enough (the voice-mode view); not a full emitter.
+        // Single observer is enough (the push-to-talk label); not a full emitter.
         setActivityListener: function (fn) { onActivity = fn; }
     };
 })();
 
 // ---- TTS fetch (backend proxy). Resolves null on any failure — the audio
 // queue then skips that chunk entirely (silence, no backup voice). ----
-function fetchTTS(text, previousText) {
+// At most two syntheses in flight: ElevenLabs plans cap concurrent requests,
+// and an over-limit request fails — that chunk would simply go missing from
+// the spoken answer. Transient failures (429 / 5xx / network) are retried
+// twice with a short backoff before a chunk is given up as silence.
+const TTS_MAX_INFLIGHT = 2;
+let ttsInflight = 0;
+const ttsWaiters = [];
+function ttsSlot() {
+    return new Promise(function (resolve) {
+        if (ttsInflight < TTS_MAX_INFLIGHT) { ttsInflight++; resolve(); }
+        else ttsWaiters.push(resolve);
+    });
+}
+function ttsFree() {
+    if (ttsWaiters.length) ttsWaiters.shift()();
+    else ttsInflight--;
+}
+
+function fetchTTS(text, previousText, purpose, isFinal) {
     if (!voiceAvailable || !sessionId) return Promise.resolve(null);
-    return fetch(DASHBOT_BASE_URL + '/voice/tts', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(sessionToken ? { 'X-Session-Token': sessionToken } : {})
-        },
-        body: JSON.stringify({
-            text: text,
-            session_id: sessionId,
-            language: DB_LANG,
-            previous_text: previousText || undefined
-        })
-    }).then(function (r) { return r.ok ? r.blob() : null; }).catch(function () { return null; });
+    const body = JSON.stringify({
+        text: text,
+        session_id: sessionId,
+        language: dbLang,
+        previous_text: previousText || undefined,
+        purpose: purpose || 'answer',   // 'reaction' → ELEVENLABS_TTS_FAST_MODEL
+        final: !!isFinal                // last clip of an answer (may end in a pause)
+    });
+    function attempt(n) {
+        const retry = function () {
+            if (n >= 2) return null;
+            return new Promise(function (res) { setTimeout(res, 700 * (n + 1)); })
+                .then(function () { return attempt(n + 1); });
+        };
+        return fetch(DASHBOT_BASE_URL + '/voice/tts', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(sessionToken ? { 'X-Session-Token': sessionToken } : {})
+            },
+            body: body
+        }).then(function (r) {
+            if (r.ok) return r.blob();
+            if (r.status === 429 || r.status >= 500) return retry();
+            return null;
+        }).catch(retry);
+    }
+    if (purpose === 'reaction') return attempt(0);   // fast model, never queued behind v3 chunks
+    return ttsSlot().then(function () { return attempt(0); })
+        .then(function (blob) { ttsFree(); return blob; },
+              function () { ttsFree(); return null; });
 }
 
 // ---- Sentence chunker: feed it streaming tokens, it emits TTS-sized chunks.
@@ -1215,84 +1646,172 @@ function fetchTTS(text, previousText) {
 function makeSpeechChunker() {
     let buf = '';
     let prev = '';        // previous spoken chunk (prosody continuity on v2 models)
-    let emitted = false;
-    const MIN_FIRST = 12, MIN_REST = 280, MAX = 600;
-    const BOUNDARY = /[.!?…]+["')\]]*\s+/g;
+    let emitted = 0;
+    const gen = speech.gen();   // the answer this chunker speaks for
+    // eleven_v3 synthesizes ~30 chars/s and speaks ~12 chars/s, so a chunk is
+    // only ready in time if it is short compared with the one playing before
+    // it. Hence the RAMP: one sentence first, then bigger and bigger pieces.
+    // (Measured: a 300-char second chunk after a 27-char first one left a
+    // 5-second hole mid-answer.)
+    const TARGETS = [45, 110, 220, 400, 600];
+    const SENT = /[.!?…]+["')\]]*\s+/g;
+    const CLAUSE = /[,;:]\s+|\s[—–-]\s+/g;
 
-    function emit(raw) {
+    let firstTimer = null;
+
+    function emit(raw, isFinal) {
+        // Interrupted (a new question, a tap, mute): the rest of this answer
+        // stays silent even if its tokens keep streaming.
+        if (speech.gen() !== gen) return;
         const clean = speechClean(raw);
         if (!clean || clean.length < 2) return;
-        // Cap previous_text to the server's 600-char validation limit —
-        // with big chunks the full prior chunk can exceed it (422 → the
-        // whole request would silently fall back to the browser voice).
-        speech.enqueue(fetchTTS(clean, prev.slice(-500)), clean);
+        // Cap previous_text to the server's 600-char validation limit. `final`
+        // marks the answer's last clip (the only one that may end in a pause).
+        speech.enqueue(fetchTTS(clean, prev.slice(-500), 'answer', !!isFinal), clean, { answer: true, gen: gen });
         prev = clean;
-        emitted = true;
+        emitted++;
     }
 
-    function drain(final) {
+    function drain(final, force) {
+        if (final && firstTimer) { clearTimeout(firstTimer); firstTimer = null; }
+        if (final && emitted === 0 && buf.trim().length < 110) {
+            // The whole answer is short and nothing has gone out yet: ONE clip.
+            if (buf.trim()) emit(buf, true);
+            buf = '';
+            return;
+        }
         while (true) {
-            const min = emitted ? MIN_REST : MIN_FIRST;
-            BOUNDARY.lastIndex = 0;
+            const min = TARGETS[Math.min(emitted, TARGETS.length - 1)];
             let cut = -1, m;
-            while ((m = BOUNDARY.exec(buf)) !== null) {
+            SENT.lastIndex = 0;
+            while ((m = SENT.exec(buf)) !== null) {
                 const end = m.index + m[0].length;
                 if (end >= min) { cut = end; break; }
             }
-            if (cut === -1) {
-                if (buf.length > MAX) {   // runaway sentence — cut at a space
-                    const sp = buf.lastIndexOf(' ', MAX);
-                    cut = sp > min ? sp + 1 : MAX;
-                } else break;
+            if (cut === -1 && buf.length > min * 1.5) {
+                // A long sentence with no end in sight: cut at a clause boundary
+                // (comma, semicolon, dash) past the target, else at a space.
+                CLAUSE.lastIndex = 0;
+                while ((m = CLAUSE.exec(buf)) !== null) {
+                    const end = m.index + m[0].length;
+                    if (end >= min && end < buf.length) { cut = end; break; }
+                }
+                if (cut === -1 && buf.length > min * 2.5) {
+                    const sp = buf.lastIndexOf(' ', min * 2);
+                    cut = sp > min ? sp + 1 : Math.floor(min * 2);
+                }
+            }
+            if (cut === -1) break;
+            if (emitted === 0 && !final && !force && buf.length < 110) {
+                // A short answer ("Hey! What's up?") sounds better as ONE clip
+                // than a sentence plus a stub with a seam: give the stream
+                // 600 ms to finish before the first clip goes out.
+                if (!firstTimer) firstTimer = setTimeout(function () { firstTimer = null; drain(false, true); }, 600);
+                break;
             }
             emit(buf.slice(0, cut));
             buf = buf.slice(cut);
         }
-        if (final && buf.trim()) { emit(buf); buf = ''; }
+        if (final && buf.trim()) { emit(buf, true); buf = ''; }
     }
 
     return {
         push: function (token) { buf += token; drain(false); },
         flush: function () { drain(true); },
-        // Has any speech chunk reached the audio queue yet? The delayed ack
-        // uses this to skip itself once the real answer is already talking.
-        hasEmitted: function () { return emitted; }
+        // Has any speech chunk reached the audio queue yet? Reactions and
+        // fillers skip themselves once the real answer is already talking.
+        hasEmitted: function () { return emitted > 0; }
     };
 }
 
-// ---- STT: mic button ----
-const DB_SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let recognition = null;
-let recording = false;
+// ---- STT: talk to the AVATAR (speaking mode) ----
+// TAP the avatar to start talking; the recording ends by itself when you finish
+// your sentence (silence detection) or on a second tap. HOLDING the avatar works
+// too: release to send. Either way the bot goes quiet the moment you start, and
+// a question still streaming is superseded (its text stays, its speech stops).
+// Recognition: the recording is transcribed by the backend's ElevenLabs Scribe
+// proxy — far more accurate than the browser's built-in engine, which is kept
+// only as an opt-in (`initDashbot({ stt: 'browser' })`) or the fallback where
+// MediaRecorder is unavailable.
+const STT_PROVIDER = (options && options.stt === 'browser' && DB_SR) ? 'browser'
+                   : (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder) ? 'server'
+                   : (DB_SR ? 'browser' : 'none');
+const PTT_MAX_MS = 30000;          // safety: a recording never runs longer than this
+const TAP_MAX_MS = 350;            // press shorter than this = tap (keeps listening), longer = hold
+const VAD_SILENCE_MS = 1300;       // silence after speech that ends a tapped recording
+const VAD_NO_SPEECH_MS = 7000;     // tapped but nothing said: give up quietly
+let recognition = null;            // browser STT session (opt-in path)
+let recording = false;             // a recording is armed or running
 let mediaRecorder = null;
 let mediaChunks = [];
+let pttHeld = false;               // the pointer is down on the avatar
+let pttTapMode = false;            // released quickly: keep listening until silence / next tap
+let pttDiscard = false;            // stop-as-cancel: throw the transcript away
+let pttPressedAt = 0;
+let pttMaxTimer = null;
+let pttUIState = 'idle';
+let botSpeaking = false;
+let vad = null;                    // silence detector for the tapped recording
+let audioCtx = null;
 
-function setMicUI(state) {
-    if (micBtn) {
-        micBtn.classList.remove('mic-recording', 'mic-busy');
-        if (state === 'recording') micBtn.classList.add('mic-recording');
-        else if (state === 'busy') micBtn.classList.add('mic-busy');
-    }
-    // Mirror the recorder state onto the speaking-mode ring. Recorder 'idle'
-    // with nothing else in flight means an empty/silent recording — in
-    // hands-free mode that just re-arms the mic (the "always running" loop);
-    // a real transcript flows into sendMessage → 'thinking' instead.
-    if (voiceMode) {
-        if (state === 'recording') setSpeakState('listening');
-        else if (state === 'busy') setSpeakState('thinking');
-        else if (state === 'idle' && !sendBtn.disabled && !speech.isActive()) {
-            setSpeakState('idle');
-            scheduleHandsFreeResume(400);
-        }
-    }
+function setPttUI(state) {
+    pttUIState = state;
+    refreshSpeakUI();
 }
 
-function updateMicVisibility() {
-    // Mic works via browser STT, or via the backend Scribe proxy — hide the
-    // mic and the speaking-mode toggle only when NEITHER is available.
-    const canTalk = (DB_SR || voiceAvailable) ? '' : 'none';
-    if (micBtn) micBtn.style.display = canTalk;
-    if (voiceModeBtn) voiceModeBtn.style.display = canTalk;
+// Speaking mode needs spoken replies (the chat is hidden), so its entry button
+// shows only when the ElevenLabs proxy is configured and some way to listen exists.
+function updateSpeakVisibility() {
+    if (speakBtn) speakBtn.style.display = (voiceAvailable && STT_PROVIDER !== 'none') ? '' : 'none';
+}
+
+// ---- Speaking mode: the chat slides away, only the avatar stays ----
+// One state at a time, derived from what is actually happening:
+//   listening (recording) · thinking (request in flight / transcribing) ·
+//   speaking (audio playing — tapping interrupts) · idle (tap to talk).
+function speakStateNow() {
+    if (recording) return 'listening';
+    if (pttUIState === 'busy') return 'thinking';
+    if (botSpeaking) return 'speaking';
+    if (sendBtn.disabled) return 'thinking';
+    return 'idle';
+}
+
+function refreshSpeakUI() {
+    if (!speakModeEl) return;
+    const st = speakStateNow();
+    speakModeEl.classList.remove('state-idle', 'state-listening', 'state-thinking', 'state-speaking');
+    speakModeEl.classList.add('state-' + st);
+    const hints = { idle: t('pttIdle'),
+                    listening: (pttTapMode || !pttHeld) ? t('pttListeningTap') : t('pttRecording'),
+                    thinking: t('speakThinking'), speaking: t('pttInterrupt') };
+    if (speakHint) speakHint.textContent = hints[st];
+    if (speakStage) speakStage.setAttribute('aria-label', hints[st]);
+}
+
+function enterSpeakMode() {
+    if (speakMode) return;
+    speakMode = true;
+    if (!voiceRepliesOn) toggleSpeaker();     // speaking mode implies hearing replies
+    isChatOpen = true;
+    avatar.classList.add('hidden');
+    panel.classList.add('open', 'speak-hidden');   // slide the chat away, keep it warm
+    speakModeEl.classList.add('open');
+    input.blur();
+    refreshSpeakUI();
+    try { speakStage.focus({ preventScroll: true }); } catch (e) {}
+}
+
+function exitSpeakMode(focusInput) {
+    if (!speakMode) return;
+    pttCancel();
+    speech.stopAll();
+    speakMode = false;
+    speakModeEl.classList.remove('open');
+    panel.classList.remove('speak-hidden');   // chat slides back in, transcript intact
+    refreshSpeakUI();
+    scrollToBottom();
+    if (focusInput !== false) input.focus();
 }
 
 function sendTranscript(text) {
@@ -1303,195 +1822,248 @@ function sendTranscript(text) {
     sendMessage();
 }
 
-function startBrowserSTT() {
-    recognition = new DB_SR();
-    recognition.lang = DB_STT_LANG;
-    recognition.interimResults = true;   // live transcript in the input box
-    recognition.continuous = false;      // stop when the user stops speaking
-    let transcript = '';
-    let hadError = false;
-    recognition.onresult = function (e) {
-        let t = '';
-        for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-        transcript = t;
-        input.value = t;
-    };
-    recognition.onerror = function (e) {
-        // no-speech is NOT an error for the hands-free loop — silence just
-        // means nobody talked yet; onend re-arms the mic and keeps waiting.
-        if (e.error === 'no-speech') return;
-        hadError = true;
-        if (e.error === 'not-allowed') {
-            voiceLoopBlocked = true;   // never auto-retry against a denied mic
-            showLocationToast('Microphone permission denied');
-        } else if (e.error !== 'aborted') {
-            showLocationToast('Voice input failed');
-        }
-    };
-    recognition.onend = function () {
-        recording = false;
-        setMicUI('idle');
-        if (!hadError) sendTranscript(transcript);
-    };
-    recording = true;
-    setMicUI('recording');
-    try { recognition.start(); } catch (e) { recording = false; setMicUI('idle'); }
+// ---- Silence detection (tap-to-talk): ends the recording ~1.3 s after the
+// user stops talking, once they have said something. Noise floor is measured
+// in the first 250 ms; speech = clearly above it for two consecutive frames. ----
+function startVAD(stream) {
+    stopVAD();
+    try {
+        audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const src = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 1024;
+        src.connect(analyser);
+        const buf = new Float32Array(analyser.fftSize);
+        const started = Date.now();
+        let floor = null, spoke = false, loud = 0, silentSince = 0;
+        const timer = setInterval(function () {
+            analyser.getFloatTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+            const rms = Math.sqrt(sum / buf.length);
+            const now = Date.now();
+            if (now - started < 250) { floor = (floor === null) ? rms : Math.min(floor, rms); return; }
+            const thr = Math.max(Math.min(floor || 0, 0.02) * 3, 0.01);
+            if (rms > thr) {
+                loud++; silentSince = 0;
+                if (loud >= 2) spoke = true;
+            } else {
+                loud = 0;
+                if (spoke) {
+                    if (!silentSince) silentSince = now;
+                    else if (now - silentSince >= VAD_SILENCE_MS && pttTapMode && !pttHeld) { stopRecording(false); return; }
+                }
+            }
+            if (!spoke && now - started > VAD_NO_SPEECH_MS && pttTapMode && !pttHeld) stopRecording(true);
+        }, 50);
+        vad = { timer: timer, src: src };
+    } catch (e) {
+        vad = null;   // no WebAudio: the second tap (or the time cap) ends the recording
+    }
 }
 
-async function startServerSTT() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-        showLocationToast('Voice input not supported in this browser');
+function stopVAD() {
+    if (!vad) return;
+    clearInterval(vad.timer);
+    try { vad.src.disconnect(); } catch (e) {}
+    vad = null;
+}
+
+// ---- Recording (server transcription — the default) ----
+async function startRecording() {
+    if (STT_PROVIDER === 'browser') { startBrowserSTT(); return; }
+    if (STT_PROVIDER !== 'server') {
+        recording = false; setPttUI('idle');
+        showLocationToast(t('toastVoiceUnsupported'));
         return;
     }
     let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (e) { showLocationToast('Microphone permission denied'); return; }
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+    } catch (e) {
+        recording = false; setPttUI('idle');
+        showLocationToast(t('toastMicDenied'));
+        return;
+    }
+    if (!recording) {   // stopped again before the mic came up — nothing to record
+        stream.getTracks().forEach(function (tr) { tr.stop(); });
+        return;
+    }
     const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
         .find(function (m) { return MediaRecorder.isTypeSupported(m); }) || '';
     mediaChunks = [];
     mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) mediaChunks.push(e.data); };
     mediaRecorder.onstop = async function () {
-        stream.getTracks().forEach(function (t) { t.stop(); });
+        stream.getTracks().forEach(function (tr) { tr.stop(); });
+        stopVAD();
+        mediaRecorder = null;
         recording = false;
         const blob = new Blob(mediaChunks, { type: mime || 'audio/webm' });
         mediaChunks = [];
-        if (!blob.size) { setMicUI('idle'); return; }
-        setMicUI('busy');
+        const discard = pttDiscard;
+        pttDiscard = false;
+        if (discard || blob.size < 1500) { setPttUI('idle'); return; }   // nothing said (a stray tap)
+        setPttUI('busy');
         try {
             if (!sessionId || !sessionToken) await startSession();
             const form = new FormData();
             form.append('audio', blob, mime.indexOf('mp4') !== -1 ? 'audio.mp4' : 'audio.webm');
             form.append('session_id', sessionId);
-            // no `language` field — Scribe auto-detects (German and English both fine)
+            form.append('language', dbLang);   // the interface language pins the recognizer
             const res = await fetch(DASHBOT_BASE_URL + '/voice/stt', {
                 method: 'POST',
                 headers: sessionToken ? { 'X-Session-Token': sessionToken } : {},
                 body: form
             });
-            setMicUI('idle');
-            if (!res.ok) { showLocationToast('Transcription failed'); return; }
+            setPttUI('idle');
+            if (!res.ok) { showLocationToast(t('toastTranscribeFailed')); return; }
             const data = await res.json();
             sendTranscript(data.text);
         } catch (e) {
-            setMicUI('idle');
-            showLocationToast('Transcription failed');
+            setPttUI('idle');
+            showLocationToast(t('toastTranscribeFailed'));
         }
     };
-    recording = true;
-    setMicUI('recording');
-    mediaRecorder.start();
+    mediaRecorder.start(250);   // timeslice: chunks flush steadily
+    startVAD(stream);
 }
 
-function toggleMic() {
-    if (recording) {
-        try { if (recognition) recognition.stop(); } catch (e) {}
-        try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop(); } catch (e) {}
+// ---- Browser Web Speech API (opt-in / fallback) ----
+function startBrowserSTT() {
+    let rec;
+    try { rec = new DB_SR(); } catch (e) {
+        recording = false; setPttUI('idle');
+        showLocationToast(t('toastVoiceUnsupported'));
         return;
     }
-    speech.stopAll();   // barge-in: stop talking when the user starts
-    if (DB_SR) startBrowserSTT();
-    else startServerSTT();
+    recognition = rec;
+    rec.lang = sttLang();
+    rec.interimResults = true;
+    rec.continuous = true;       // until the second tap / release (the browser also ends it after a long silence)
+    let transcript = '';
+    let hadError = false;
+    rec.onresult = function (e) {
+        let txt = '';
+        for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+        transcript = txt;
+        input.value = txt;
+    };
+    rec.onerror = function (e) {
+        // no-speech: nothing was said; aborted: our own stop().
+        if (e.error === 'no-speech' || e.error === 'aborted') return;
+        hadError = true;
+        if (e.error === 'not-allowed') showLocationToast(t('toastMicDenied'));
+        else showLocationToast(t('toastVoiceFailed'));
+    };
+    rec.onend = function () {
+        recognition = null;
+        recording = false;
+        clearMaxTimer();
+        pttHeld = false; pttTapMode = false;
+        setPttUI('idle');
+        const discard = pttDiscard;
+        pttDiscard = false;
+        if (discard) { input.value = ''; return; }
+        if (!hadError) sendTranscript(transcript);
+    };
+    try { rec.start(); } catch (e) { recognition = null; recording = false; setPttUI('idle'); }
 }
 
-// ---- Speaking mode: hands-free, ChatGPT-style ("just talking") ----
-// The chat panel slides away and ONLY the avatar remains, in the screen
-// corner with its state ring — no window, no box; the page/map stays fully
-// visible. No subtitles. The mic runs CONTINUOUSLY: browser STT
-// auto-endpoints on silence → the transcript is sent → the answer is
-// spoken → the mic re-arms itself. The map keeps receiving pins/routes,
-// and the hidden chat DOM keeps the transcript.
-let voiceMode = false;          // speaking mode active
-let voiceLoopBlocked = false;   // mic permission denied — stop auto-retrying
-let handsFreeTimer = null;
-
-function setSpeakState(state) {
-    if (!speakModeEl) return;
-    speakModeEl.classList.remove('state-idle', 'state-listening', 'state-thinking', 'state-speaking');
-    speakModeEl.classList.add('state-' + state);
+function clearMaxTimer() {
+    if (pttMaxTimer) { clearTimeout(pttMaxTimer); pttMaxTimer = null; }
 }
 
-// Re-arm the mic shortly — the heart of hands-free. The delay keeps the mic
-// from catching the tail of the bot's own audio, and collapses the many
-// resume triggers (recorder ended silent, queue drained, answer finished)
-// into one pending restart.
-function scheduleHandsFreeResume(delayMs) {
-    if (!voiceMode) return;
-    if (handsFreeTimer) clearTimeout(handsFreeTimer);
-    handsFreeTimer = setTimeout(function () {
-        handsFreeTimer = null;
-        handsFreeListen();
-    }, delayMs || 500);
-}
-
-function handsFreeListen() {
-    if (!voiceMode || recording || sendBtn.disabled || speech.isActive()) return;
-    if (voiceLoopBlocked) { setSpeakState('idle'); return; }   // tap to retry
-    if (DB_SR) startBrowserSTT();
-    else setSpeakState('idle');   // no Web Speech API: tap-to-talk via server STT
-}
-
-function enterSpeakMode() {
-    if (voiceMode) return;
-    voiceMode = true;
-    voiceLoopBlocked = false;
-    if (!voiceRepliesOn) toggleSpeaker();     // speaking mode implies hearing replies
-    isChatOpen = true;
-    avatar.classList.add('hidden');
-    panel.classList.add('open', 'speak-hidden');   // slide the chat away, keep it warm
-    speakModeEl.classList.add('open');
-    setSpeakState('idle');
-    if (DB_SR) handsFreeListen();             // user gesture → permission prompt → loop
-    else toggleMic();                         // one-shot server STT fallback
-}
-
-function exitSpeakMode() {
-    if (handsFreeTimer) { clearTimeout(handsFreeTimer); handsFreeTimer = null; }
-    if (recording) toggleMic();               // stop an in-flight recording
-    speech.stopAll();
-    voiceMode = false;
-    speakModeEl.classList.remove('open');
-    panel.classList.remove('speak-hidden');   // chat slides back in, transcript intact
-    setSpeakState('idle');
-    scrollToBottom();
-    input.focus();
-}
-
-// Tap the avatar: interrupt the answer and talk (or stop the current
-// recording). While the agent is still THINKING there is nothing to
-// interrupt yet — ignore taps instead of double-sending.
-function speakStageTap() {
-    voiceLoopBlocked = false;                 // a tap is a fresh user gesture
-    if (recording) { toggleMic(); return; }
-    if (sendBtn.disabled && !speech.isActive()) return;
-    speech.stopAll();
-    if (DB_SR) handsFreeListen();
-    else toggleMic();
-}
-
-// Speaking / idle transitions come from the audio queue itself: 'speak'
-// fires as each sentence starts, 'idle' when the queue drains — back to
-// thinking if the answer is still streaming (sendBtn stays disabled until
-// setLoading(false)), else re-arm the mic and keep the conversation going.
-speech.setActivityListener(function (kind) {
-    if (!voiceMode) return;
-    if (kind === 'speak') setSpeakState('speaking');
-    else if (kind === 'idle') {
-        if (sendBtn.disabled) setSpeakState('thinking');
-        else { setSpeakState('idle'); scheduleHandsFreeResume(600); }
+// Press: while listening, a press ends the recording (tap-to-stop). Otherwise
+// the bot goes quiet and listening starts at once.
+function pttPress() {
+    if (recording) {
+        if (pttTapMode && !pttHeld) stopRecording(false);
+        return;
     }
+    pttHeld = true;
+    pttTapMode = false;
+    pttDiscard = false;
+    pttPressedAt = Date.now();
+    speech.stopAll();
+    recording = true;             // the ring shows "listening" immediately
+    setPttUI('recording');
+    clearMaxTimer();
+    pttMaxTimer = setTimeout(function () { pttMaxTimer = null; stopRecording(false); }, PTT_MAX_MS);
+    startRecording();
+}
+
+// Release: a quick tap keeps listening (silence or the next tap ends it); a
+// hold ends it now and sends.
+function pttRelease() {
+    if (!pttHeld) return;
+    pttHeld = false;
+    if (recording && Date.now() - pttPressedAt < TAP_MAX_MS) {
+        pttTapMode = true;
+        refreshSpeakUI();
+        return;
+    }
+    stopRecording(false);
+}
+
+// Stop the recording; the transcript is sent (or thrown away with discard).
+function stopRecording(discard) {
+    if (!recording) return;
+    pttDiscard = !!discard;
+    pttHeld = false;
+    pttTapMode = false;
+    clearMaxTimer();
+    stopVAD();
+    try { if (recognition) recognition.stop(); } catch (e) {}
+    try { if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop(); } catch (e) {}
+    if (!recognition && !mediaRecorder) {   // the mic never came up: nothing to flush
+        recording = false;
+        setPttUI('idle');
+    }
+}
+
+// Cancel: stop and throw the transcript away (close / reset / leaving speaking mode).
+function pttCancel() {
+    if (recording) stopRecording(true);
+}
+
+if (speakStage) {
+    speakStage.addEventListener('pointerdown', function (e) {
+        if (e.button !== undefined && e.button !== 0) return;   // primary button / touch only
+        e.preventDefault();
+        try { speakStage.setPointerCapture(e.pointerId); } catch (err) {}
+        pttPress();
+    });
+    ['pointerup', 'pointercancel'].forEach(function (type) {
+        speakStage.addEventListener(type, function (e) { e.preventDefault(); pttRelease(); });
+    });
+    speakStage.addEventListener('contextmenu', function (e) { e.preventDefault(); });   // long-press menu on mobile
+    speakStage.addEventListener('keydown', function (e) {
+        if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); pttPress(); }
+        else if (e.key === 'Escape') { exitSpeakMode(); }
+    });
+    speakStage.addEventListener('keyup', function (e) {
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); pttRelease(); }
+    });
+    // Tab hidden mid-recording: don't keep the mic open in the background.
+    document.addEventListener('visibilitychange', function () { if (document.hidden) pttCancel(); });
+}
+if (speakBtn) speakBtn.addEventListener('click', enterSpeakMode);
+if (speakExit) speakExit.addEventListener('click', function () { exitSpeakMode(); });
+
+// While the bot talks the avatar shows "speaking" and the hint reads "Tap to
+// interrupt", so users know a tap cuts the answer short.
+let answerAudioGen = -1;   // speech generation whose ANSWER audio has started playing
+speech.setActivityListener(function (kind, text, meta) {
+    botSpeaking = (kind === 'speak');
+    if (kind === 'speak' && meta && meta.answer) answerAudioGen = meta.gen;
+    refreshSpeakUI();
 });
 
-if (micBtn) micBtn.addEventListener('click', enterSpeakMode);
-if (voiceModeBtn) voiceModeBtn.addEventListener('click', enterSpeakMode);
-if (speakExit) speakExit.addEventListener('click', exitSpeakMode);
-if (speakStage) {
-    speakStage.addEventListener('click', speakStageTap);
-    speakStage.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); speakStageTap(); }
-    });
-}
-updateMicVisibility();
+updateSpeakVisibility();
 
 // ---- Speaker (voice replies) toggle ----
 const DB_SPK_ON_SVG  = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
@@ -1501,7 +2073,7 @@ function updateSpeakerUI() {
     if (!speakerBtn) return;
     speakerBtn.innerHTML = voiceRepliesOn ? DB_SPK_ON_SVG : DB_SPK_OFF_SVG;
     speakerBtn.classList.toggle('voice-muted', !voiceRepliesOn);
-    speakerBtn.title = voiceRepliesOn ? 'Voice replies: on' : 'Voice replies: off';
+    speakerBtn.title = voiceRepliesOn ? t('voiceOn') : t('voiceOff');
 }
 
 function toggleSpeaker() {
@@ -1513,6 +2085,49 @@ function toggleSpeaker() {
 
 if (speakerBtn) speakerBtn.addEventListener('click', toggleSpeaker);
 updateSpeakerUI();
+
+// ---- Language switch (EN/DE) ----
+// Re-labels the whole widget, and from the next turn on: speech recognition
+// listens in that language, the voice speaks it, and the agent answers in it.
+function applyLanguage() {
+    if (langBtn) {
+        langBtn.textContent = dbLang.toUpperCase();
+        langBtn.title = t('langTitle');
+    }
+    var tip = avatar.querySelector('.avatar-tooltip');
+    if (tip) tip.textContent = t('tooltip');
+    var status = panel.querySelector('.dashbot-header-status');
+    if (status) status.innerHTML = '<span class="dot"></span> ' + t('online');
+    if (resetBtn) resetBtn.title = t('newChat');
+    input.placeholder = t('placeholder');
+    if (!typing.classList.contains('show')) typingTextEl.textContent = t('thinking');
+    if (speakBtn) {
+        speakBtn.title = t('speakBtnTitle');
+        var sl = speakBtn.querySelector('.db-speak-label');
+        if (sl) sl.textContent = t('speakBtn');
+    }
+    if (speakExit) {
+        var xl = speakExit.querySelector('.db-speak-exit-label');
+        if (xl) xl.textContent = t('speakExit');
+    }
+    if (speakStage) speakStage.title = t('pttTitle');
+    refreshSpeakUI();
+    updateLocationButton(locationUIState);
+    updateSpeakerUI();
+    applyTheme(document.documentElement.classList.contains('dashbot-dark') ? 'dark' : 'light');
+    // Welcome screen still up (no messages yet): re-render it in the new language.
+    var w = document.getElementById('dashbotWelcome');
+    if (w) { w.outerHTML = welcomeMarkup(); bindWelcomeButtons(); }
+}
+
+function setLanguage(lang) {
+    dbLang = lang === 'de' ? 'de' : 'en';
+    try { localStorage.setItem('dashbot-lang', dbLang); } catch (e) {}
+    applyLanguage();
+}
+
+if (langBtn) langBtn.addEventListener('click', function () { setLanguage(dbLang === 'de' ? 'en' : 'de'); });
+applyLanguage();
 
 // ---- Send ----
 input.addEventListener('keypress', e => {
@@ -1526,67 +2141,74 @@ async function sendMessage() {
 
     if (!isChatOpen) openChat();
 
+    // A new question always supersedes the previous answer: its speech stops
+    // now, and if it is still streaming its request is aborted (the text it
+    // already produced stays on screen).
+    speech.stopAll();
+    abortActiveRequest();
+    const seq = ++requestSeq;
+    const controller = new AbortController();
+    activeController = controller;
+    const isCurrent = function () { return seq === requestSeq; };
+    let finalizePartial = null;   // set once the streaming bubble exists
+
     // Voice: speak this reply if the question came in by voice (or the host
     // page opted into speaking everything) and the speaker isn't muted.
     const wasVoice = pendingVoiceInput;
     pendingVoiceInput = false;
-    const speakReply = voiceRepliesOn && (wasVoice || SPEAK_ALL_REPLIES || voiceMode);
+    const speakReply = voiceRepliesOn && (wasVoice || SPEAK_ALL_REPLIES);
+    const speechGen = speech.gen();   // reactions belong to THIS answer only
     const speechChunker = speakReply ? makeSpeechChunker() : null;
-    const ACK_GRACE_MS = 1200;
-    const FILLER_INTERVAL_MS = 4000;
-    const MAX_FILLERS = 2;
-    let ackTimer = null;      // whichever stage is pending: ack or next filler
-    let fillerCount = 0;
+    const FILLER_DELAY_MS = 5000;     // "still on it" lines every 5 s while the lookup drags on
+    let ackTimer = null;              // the pending filler
     function cancelAck() {
         if (ackTimer) { clearTimeout(ackTimer); ackTimer = null; }
     }
-    function scheduleFiller() {
-        ackTimer = setTimeout(function () {
-            ackTimer = null;
-            if (speechChunker && speechChunker.hasEmitted()) return;
-            if (fillerCount >= MAX_FILLERS) return;
-            fillerCount++;
-            const filler = pickFillerPhrase();
-            speech.enqueue(fetchTTS(filler, ''), filler);
-            scheduleFiller();   // keep humming until the answer shows up
-        }, FILLER_INTERVAL_MS);
+    // Server-sent spoken reaction: a tiny side call reacted to what the user
+    // SAID ("Ooh, the Mensa, one sec") while the agent looks things up. Play
+    // it only if the real answer hasn't started talking yet; the optional
+    // filler follows once if the lookup still drags on.
+    function playReaction(r) {
+        if (!speechChunker || speech.gen() !== speechGen) return;
+        if (speechChunker.hasEmitted()) return;
+        const text = ((r && r.text) || '').trim();
+        if (text) {
+            pinTypingText(text);
+            speech.enqueue(fetchTTS(text, '', 'reaction'), text);
+        }
+        // "Still on it" lines while a long lookup runs: OFF (MAX_FILLERS = 0)
+        // — one sentence before the answer is right, three felt like chatter.
+        // Raise MAX_FILLERS to bring them back (5 s apart, until the answer is
+        // actually audible).
+        const MAX_FILLERS = 0;
+        let fillers = (r && Array.isArray(r.fillers)) ? r.fillers.slice(0, MAX_FILLERS) : [];
+        if (!fillers.length && MAX_FILLERS > 0 && r && (r.filler || '').trim()) fillers = [r.filler.trim()];
+        if (fillers.length) {
+            cancelAck();
+            let i = 0;
+            const scheduleNext = function () {
+                ackTimer = setTimeout(function () {
+                    ackTimer = null;
+                    if (speech.gen() !== speechGen || answerAudioGen === speechGen || i >= fillers.length) return;
+                    const f = fillers[i++];
+                    speech.enqueue(fetchTTS(f, '', 'reaction'), f);
+                    scheduleNext();
+                }, FILLER_DELAY_MS);
+            };
+            scheduleNext();
+        }
     }
-    speech.stopAll();   // a new question always interrupts the previous answer
-
     addMessage(msg, true);
     clearMapOverlay();   // wipe the previous answer's pins/routes from the map
     input.value = '';
     setLoading(true);
     showTyping();
-    // Speaking mode: the question was heard — now we're working on it.
-    if (voiceMode) setSpeakState('thinking');
 
     try {
         // Make sure we have a session before sending; mint one if the initial
         // startSession() hasn't landed yet (or previously failed).
         if (!sessionId || !sessionToken) {
             await startSession();
-        }
-
-        // Rule-based acknowledgment, ARMED on a short grace timer instead of
-        // played instantly. Its only job is masking TOOL-CALL latency: if the
-        // first answer sentence reaches the audio queue within the grace
-        // window (greetings, small talk, quick follow-ups — no tools), the
-        // ack silently skips and the real answer just speaks. Tool-bound
-        // questions still get the ack, masking the remaining seconds. Small
-        // talk ('none') never gets one at all.
-        if (speakReply) {
-            const ackKind = classifyAck(msg);
-            if (ackKind !== 'none') {
-                const ack = pickAckPhrase(ackKind);
-                ackTimer = setTimeout(function () {
-                    ackTimer = null;
-                    if (speechChunker && speechChunker.hasEmitted()) return;
-                    pinTypingText(ack);
-                    speech.enqueue(fetchTTS(ack, ''), ack);
-                    scheduleFiller();   // adaptive hums while the agent works
-                }, ACK_GRACE_MS);
-            }
         }
 
         function postChat() {
@@ -1596,16 +2218,18 @@ async function sendMessage() {
                     'Content-Type': 'application/json',
                     ...(sessionToken ? { 'X-Session-Token': sessionToken } : {})
                 },
+                signal: controller.signal,
                 body: JSON.stringify({
                     message: msg,
                     session_id: sessionId || undefined,
+                    language: dbLang,   // answer language — the server instructs the agent
                     stream: true,
                     conversational: true,
                     user_location: userLocation,
                     location_status: locationStatus,
-                    // Hands-free speaking mode: the server injects the
-                    // spoken-conversation style (short, natural, v3 audio tags).
-                    voice_mode: voiceMode
+                    // Spoken question that will be spoken back: the server
+                    // injects the spoken-conversation style (short, natural).
+                    voice_mode: wasVoice && speakReply
                 })
             });
         }
@@ -1629,10 +2253,10 @@ async function sendMessage() {
         if (ctype.includes('application/json')) {
             const data = await res.json();
             cancelAck();
-            hideTyping();
+            if (isCurrent()) hideTyping();
             const s = addStreamingMessage();
             s.outerBubble.classList.add('is-streaming');
-            const fullText = data.text || 'Sorry, I could not generate a response.';
+            const fullText = data.text || t('errNoAnswer');
             s.bubble.innerHTML = formatBotMessage(fullText);
             s.bubble.appendChild(s.time);
             s.outerBubble.classList.remove('is-streaming');
@@ -1642,7 +2266,7 @@ async function sendMessage() {
                 speechChunker.flush();
             }
             scrollToBottom();
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
             return;
         }
 
@@ -1658,7 +2282,7 @@ async function sendMessage() {
 
         function ensureBubble() {
             if (!firstToken) return;
-            hideTyping();
+            if (isCurrent()) hideTyping();
             var s = addStreamingMessage();
             bubble = s.bubble;
             outerBubble = s.outerBubble;
@@ -1705,6 +2329,12 @@ async function sendMessage() {
             if (msgDiv) renderSuggestions(msgDiv, suggList);
             scrollToBottom();
         }
+        // Superseded mid-stream: land whatever text arrived and tie the bubble off.
+        finalizePartial = function () {
+            streamDone = true;
+            displayedLen = fullText.length;
+            finalizeBubble();
+        };
 
         function runTyper() {
             if (typerActive) return;
@@ -1760,6 +2390,11 @@ async function sendMessage() {
                     if (ev.type === 'card') {
                         // Buffer until text finishes — cards render below the message
                         pendingCards.push(ev.card);
+                        // ...but the MAP reacts right away: pins drop and the route reveals
+                        // while the typewriter is still revealing the text.
+                        if (isCurrent()) previewCardOnMap(ev.card);
+                    } else if (ev.type === 'reaction') {
+                        playReaction(ev);
                     } else if (ev.type === 'token') {
                         ensureBubble();
                         fullText += ev.content;
@@ -1785,7 +2420,7 @@ async function sendMessage() {
             }
         }
 
-        hideTyping();
+        if (isCurrent()) hideTyping();
         if (!fullText) {
             cancelAck();
             if (speechChunker) speechChunker.flush();
@@ -1797,7 +2432,7 @@ async function sendMessage() {
                 outerBubble = sf.outerBubble;
                 msgDiv = sf.msg;
             }
-            bubble.textContent = 'Sorry, I could not generate a response.';
+            bubble.textContent = t('errNoAnswer');
             bubble.appendChild(time);
             if (outerBubble) outerBubble.classList.remove('is-streaming');
             if (pendingCards.length && cardsContainer) flushCards();
@@ -1809,22 +2444,26 @@ async function sendMessage() {
             runTyper();
         }
 
-        setLoading(false);
+        if (isCurrent()) setLoading(false);
 
     } catch (err) {
-        console.error('Dashbot Error:', err);
         cancelAck();
-        hideTyping();
-        setLoading(false);
+        if (err && err.name === 'AbortError') {
+            // Superseded by a newer question: keep the text that arrived, no error bubble.
+            if (finalizePartial) finalizePartial();
+            return;
+        }
+        console.error('Dashbot Error:', err);
+        if (isCurrent()) { hideTyping(); setLoading(false); }
         addMessage(
-            err.message.includes('Failed to fetch')
-                ? 'Cannot connect to Dashbot. Is the backend running?'
-                : 'Sorry, something went wrong. Please try again.',
+            err.message.includes('Failed to fetch') ? t('errConnect') : t('errGeneric'),
             false
         );
+    } finally {
+        if (activeController === controller) activeController = null;
     }
 
-    if (!voiceMode) input.focus();
+    if (!wasVoice && !speakMode) input.focus();   // after a spoken question, don't pop the keyboard
 }
 
 console.log('Dashbot widget initialized — base URL:', DASHBOT_BASE_URL);

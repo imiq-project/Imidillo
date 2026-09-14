@@ -11,6 +11,7 @@ The FIWARE `coords` parameter is formatted `lat,lon` (as produced here from
 """
 
 import asyncio
+import sys
 import random
 import threading
 import time
@@ -520,7 +521,7 @@ class FIWAREClient:
         attrs: Optional[str] = None,
     ) -> Dict[str, Any]:
         _assert_magdeburg_bounds(latitude, longitude)
-        print(f"[FIWARE] Geo-query: type={sensor_type}, coords=({latitude}, {longitude}), radius={radius}m")
+        print(f"[FIWARE] Geo-query: type={sensor_type}, coords=({latitude}, {longitude}), radius={radius}m", file=sys.stderr)
 
         type_mapping = {
             "Weather": "Weather", "Parking": "Parking", "Traffic": "Traffic",
@@ -560,13 +561,13 @@ class FIWAREClient:
         if err is not None:
             return err
         if not entities:
-            print(f"[FIWARE] No sensor found within {radius}m")
+            print(f"[FIWARE] No sensor found within {radius}m", file=sys.stderr)
             return {
                 "success": False,
                 "error": f"No {fiware_type} sensor found within {radius}m of ({latitude}, {longitude})",
             }
         entity = entities[0]
-        print(f"[FIWARE] Found sensor: {entity.get('id', 'unknown')}")
+        print(f"[FIWARE] Found sensor: {entity.get('id', 'unknown')}", file=sys.stderr)
         return {
             "success": True,
             "entity_type": fiware_type,

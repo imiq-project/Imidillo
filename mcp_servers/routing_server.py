@@ -6,19 +6,21 @@ and place-to-coordinate resolution.
 Routes come from the IMIQ ranked-routes API (GraphHopper-backed, whole-city
 coverage) — ONE call returns all road modes. The IMIQ router provides
 summaries only (distance / duration; no geometry / street list / turn-by-turn),
-so OpenRouteService is called per available mode purely to fetch each route's
-POLYLINE GEOMETRY for the map — a visual overlay only; IMIQ stays the source of
-truth for distance and duration. ORS also remains the geocoder fallback for
-off-graph place names. Traffic data comes from the FIWARE sensor network
+so each available mode's POLYLINE GEOMETRY for the map is fetched separately —
+OpenRouteService and Valhalla are asked in parallel and the first answer wins
+(ORS alone has had 15-30 s days) — a visual overlay only; IMIQ stays the
+source of truth for distance and duration. Traffic data comes from the FIWARE sensor network
 (radius check near the route), and public transit stays on the Neo4j NEXT_STOP
 graph (see find_transit_route).
 """
 
 import json
 import math
+import re
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,10 +29,11 @@ from models import Coordinates
 from clients.fiware_client import FIWAREClient
 from clients.imiq_client import IMIQRoutingClient
 from clients.ors_client import ORSClient
+from clients.valhalla_client import ValhallaClient
 from config import (
     IMIQ_ROUTING_URL,
     FIWARE_BASE_URL, FIWARE_API_KEY,
-    ORS_API_KEY, ORS_BASE_URL, HTTP_TIMEOUT,
+    ORS_API_KEY, ORS_BASE_URL, HTTP_TIMEOUT, VALHALLA_URL,
     NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE,
 )
 from mcp_servers._traffic_helpers import summarize_traffic_entity, haversine_m
@@ -59,11 +62,22 @@ mcp = FastMCP("routing", instructions=(
 _imiq = IMIQRoutingClient(IMIQ_ROUTING_URL)
 _fiware = FIWAREClient(FIWARE_BASE_URL, FIWARE_API_KEY)
 
-# ORS is used here ONLY to fetch route polyline geometry for the map overlay;
-# IMIQ remains the source of truth for distance/duration. Disabled when no API
-# key is set (route cards then fall back to the dashed start->end straight line).
+# ORS and Valhalla are used here ONLY to fetch route polyline geometry for the
+# map overlay; IMIQ remains the source of truth for distance/duration. Both are
+# asked in parallel and the first success wins (_route_geometry). With neither
+# configured, route cards fall back to the dashed start->end straight line.
 _ors = ORSClient(ORS_API_KEY, ORS_BASE_URL, HTTP_TIMEOUT)
-_GEOMETRY_ENABLED = bool(ORS_API_KEY)
+_valhalla = ValhallaClient(VALHALLA_URL) if VALHALLA_URL else None
+_GEOMETRY_ENABLED = bool(ORS_API_KEY) or _valhalla is not None
+
+# Persistent worker pools. Enrichment/geometry calls are waited on with a
+# DEADLINE, never joined: a `with ThreadPoolExecutor()` block blocks on exit
+# until every submitted call has finished, so one slow provider (ORS at 30 s)
+# used to hold the whole route answer hostage. Stragglers now finish in the
+# background and are discarded. Two pools so the geometry race (submitted
+# from an enrichment worker) can never deadlock on its own pool.
+_ENRICH_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="route-enrich")
+_GEOM_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="route-geom")
 
 # ---------------------------------------------------------------------------
 # Neo4j-first place resolution. The campus knowledge graph is the PRIMARY
@@ -119,6 +133,20 @@ def _anchor(lat, lon):
     return None
 
 
+# A bare "lat, lon" pair handed over as a place name — the agent sometimes
+# passes the user's own coordinates that way. Understood everywhere a place
+# name is accepted, so a trip from the user's position never goes through
+# name resolution (which cannot resolve an address label like "IMIQ office
+# (Building 80), Niels-Bohr-Straße 1" and would pick a wrong origin).
+_COORD_TEXT_RE = re.compile(r"^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$")
+
+
+def _coords_from_text(text):
+    """(lat, lon) inside Magdeburg when `text` is a bare coordinate pair, else None."""
+    m = _COORD_TEXT_RE.match(text or "")
+    return _anchor(m.group(1), m.group(2)) if m else None
+
+
 def _candidate_payload(c: dict) -> dict:
     """Shape one disambiguation candidate for the agent + map pin (drops the
     resolver's internal fields). `latitude`/`longitude` let api.py pin it."""
@@ -149,6 +177,11 @@ def _resolve_endpoint_decision(name: str, anchor=None) -> tuple:
     mention them — resolution never blocks on a "which one?" question."""
     if not name or not name.strip():
         return ("none", None)
+
+    here = _coords_from_text(name)
+    if here is not None:
+        return ("resolved", {"name": "your location", "lat": here[0], "lon": here[1],
+                             "type": "coordinates", "matched": "coordinates"})
 
     if looks_like_street_address(name):
         geo = geocode_fallback(name)
@@ -788,9 +821,13 @@ def get_driving_route(
 _ALL_MODES = ("walking", "cycling", "driving")
 
 
-def _future_result(future, default=None):
+def _result_by(future, deadline: float, default=None):
+    """A future's result if it lands before `deadline` (time.monotonic()),
+    else `default` — the call itself keeps running in the background."""
+    if future is None:
+        return default
     try:
-        return future.result(timeout=_ROUTE_MODE_TIMEOUT_S)
+        return future.result(timeout=max(0.0, deadline - time.monotonic()))
     except Exception:
         return default
 
@@ -810,6 +847,50 @@ def _ors_geometry(mode: str, start: Coordinates, end: Coordinates):
         return None
     if isinstance(res, dict) and res.get("success"):
         return res.get("geometry") or None
+    return None
+
+
+def _valhalla_geometry(mode: str, start: Coordinates, end: Coordinates):
+    """Best-effort Valhalla polyline for ONE road mode (same contract as
+    _ors_geometry: an encoded precision-5 polyline string, or None)."""
+    if _valhalla is None:
+        return None
+    try:
+        res = _valhalla.get_route(start, end, profile=mode)
+    except Exception:
+        return None
+    if isinstance(res, dict) and res.get("success"):
+        return res.get("geometry") or None
+    return None
+
+
+def _route_geometry(mode: str, start: Coordinates, end: Coordinates):
+    """Path shape for ONE road mode from whichever geometry provider answers
+    first WITH a route: ORS and Valhalla run in parallel. ORS normally lands
+    in ~1-2 s and wins; on its bad days (15-30 s or timeouts) Valhalla covers
+    in ~0.5 s. None when nobody delivers within the mode budget — the map
+    then shows the dashed straight line. Never raises."""
+    providers = []
+    if ORS_API_KEY:
+        providers.append(lambda: _ors_geometry(mode, start, end))
+    if _valhalla is not None:
+        providers.append(lambda: _valhalla_geometry(mode, start, end))
+    if not providers:
+        return None
+    deadline = time.monotonic() + _ROUTE_MODE_TIMEOUT_S
+    pending = {_GEOM_POOL.submit(fn) for fn in providers}
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+        for fut in done:
+            try:
+                geom = fut.result()
+            except Exception:
+                geom = None
+            if geom:
+                return geom   # the other provider finishes in the background, discarded
     return None
 
 
@@ -852,9 +933,9 @@ def _compute_routes(start: Coordinates, end: Coordinates,
             routes[mode] = {"available": False,
                             "error": r.get("error", "route calculation failed")}
 
-    # Modes that get an ORS polyline overlay: available + requested + not
-    # already carrying IMIQ geometry (which would take precedence). Skipped
-    # entirely when ORS isn't configured.
+    # Modes that get a polyline overlay: available + requested + not already
+    # carrying IMIQ geometry (which would take precedence). Skipped entirely
+    # when no geometry provider is configured.
     geom_modes = ([m for m in _ALL_MODES
                    if routes[m]["available"] and m in want and not routes[m].get("geometry")]
                   if _GEOMETRY_ENABLED else [])
@@ -866,21 +947,23 @@ def _compute_routes(start: Coordinates, end: Coordinates,
 
     mid_lat = (start.lat + end.lat) / 2.0
     mid_lon = (start.lon + end.lon) / 2.0
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        geom_futures = {m: pool.submit(_ors_geometry, m, start, end) for m in geom_modes}
-        f_air = pool.submit(_nearest_air_quality, mid_lat, mid_lon) if want_air else None
-        f_weather = pool.submit(_nearest_weather, mid_lat, mid_lon) if want_air else None
-        f_traffic = (pool.submit(_traffic_near_route, start.lat, start.lon, end.lat, end.lon)
-                     if want_drive else None)
-        f_parking = pool.submit(_nearest_online_parking, end.lat, end.lon) if want_drive else None
-        for m, fut in geom_futures.items():
-            geom = _future_result(fut)
-            if geom:
-                routes[m]["geometry"] = geom
-        air = _future_result(f_air) if f_air else None
-        weather = _future_result(f_weather) if f_weather else None
-        traffic = _future_result(f_traffic) if f_traffic else None
-        parking = _future_result(f_parking) if f_parking else None
+    # One shared deadline for the whole fan-out: everything below runs in
+    # parallel, and whatever hasn't landed by then is dropped (not awaited).
+    deadline = time.monotonic() + _ROUTE_MODE_TIMEOUT_S
+    geom_futures = {m: _ENRICH_POOL.submit(_route_geometry, m, start, end) for m in geom_modes}
+    f_air = _ENRICH_POOL.submit(_nearest_air_quality, mid_lat, mid_lon) if want_air else None
+    f_weather = _ENRICH_POOL.submit(_nearest_weather, mid_lat, mid_lon) if want_air else None
+    f_traffic = (_ENRICH_POOL.submit(_traffic_near_route, start.lat, start.lon, end.lat, end.lon)
+                 if want_drive else None)
+    f_parking = _ENRICH_POOL.submit(_nearest_online_parking, end.lat, end.lon) if want_drive else None
+    for m, fut in geom_futures.items():
+        geom = _result_by(fut, deadline)
+        if geom:
+            routes[m]["geometry"] = geom
+    air = _result_by(f_air, deadline)
+    weather = _result_by(f_weather, deadline)
+    traffic = _result_by(f_traffic, deadline)
+    parking = _result_by(f_parking, deadline)
 
     for mode in ("walking", "cycling"):
         if not routes[mode]["available"]:
@@ -944,11 +1027,18 @@ def get_all_routes(
 @mcp.tool()
 def get_routes_for_places(origin_name: str, destination_name: str,
                           near_lat: float | None = None,
-                          near_lon: float | None = None) -> str:
+                          near_lon: float | None = None,
+                          origin_lat: float | None = None,
+                          origin_lon: float | None = None) -> str:
     """Single-call route planner: resolves both place names AND computes
     walking, cycling, and driving. Use this for any 'how do I get from X
     to Y' query — it replaces the resolve-resolve-route sequence with one
     round-trip.
+
+    Trip FROM THE USER'S POSITION (their shared location): pass their
+    coordinates as `origin_lat`/`origin_lon` with origin_name "my location"
+    and only the destination by name — the origin is then used as-is, no
+    name resolution (an address label is NOT a resolvable place name).
 
     Disambiguation: if a name matches several distinct places (a chain like
     "Lidl" / "World of Pizza"), the tool AUTO-PICKS — the origin as the branch
@@ -965,15 +1055,26 @@ def get_routes_for_places(origin_name: str, destination_name: str,
             No known origin → ask the user first instead of calling this.
         destination_name: Destination place name.
         near_lat, near_lon: optional user location, to pick the nearest branch.
+        origin_lat, origin_lon: the user's own coordinates when the trip starts
+            from where they are — then no origin name is resolved. Leave empty
+            when the origin is a named place.
 
     Returns:
         JSON with origin/destination resolved info plus all three modes.
     """
     user_anchor = _anchor(near_lat, near_lon)
 
-    # 1. Origin — anchored ONLY on the user (don't guess which branch they START
-    #    from off the destination).
-    o_status, o_data = _resolve_endpoint_decision(origin_name, user_anchor)
+    # 1. Origin — the user's own coordinates when given (nothing to resolve,
+    #    nothing to get wrong), else resolved by name, anchored ONLY on the
+    #    user (don't guess which branch they START from off the destination).
+    origin_here = _anchor(origin_lat, origin_lon)
+    if origin_here is not None:
+        o_status, o_data = "resolved", {
+            "name": (origin_name or "").strip() or "your location",
+            "lat": origin_here[0], "lon": origin_here[1],
+            "type": "coordinates", "matched": "coordinates"}
+    else:
+        o_status, o_data = _resolve_endpoint_decision(origin_name, user_anchor)
     if o_status == "none":
         return json.dumps({"success": False, "error": "place_not_found",
                            "which": "origin", "place": origin_name})

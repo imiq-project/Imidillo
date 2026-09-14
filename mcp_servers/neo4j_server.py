@@ -643,7 +643,7 @@ def _try_read(cypher: str, params: dict, timeout: float) -> list:
         return _run_read(cypher, params, timeout=timeout)
     except Exception as e:
         print(f"[TRANSIT] strategy query failed ({type(e).__name__}); "
-              f"falling through to next strategy")
+              f"falling through to next strategy", file=sys.stderr)  # stdout is the MCP channel
         return []
 
 
@@ -752,6 +752,17 @@ def _anchor(lat, lon):
     return None
 
 
+# A bare "lat, lon" pair handed over as a place name (the user's own position):
+# boards at the nearest stop to it, no name resolution.
+_COORD_TEXT_RE = re.compile(r"^\s*(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*$")
+
+
+def _coords_from_text(text):
+    """(lat, lon) inside Magdeburg when `text` is a bare coordinate pair, else None."""
+    m = _COORD_TEXT_RE.match(text or "")
+    return _anchor(m.group(1), m.group(2)) if m else None
+
+
 def _candidate_payload(c: dict) -> dict:
     """Shape one disambiguation candidate for the agent + map pin (drops the
     resolver's internal fields). `latitude`/`longitude` let api.py pin it."""
@@ -781,6 +792,18 @@ def _resolve_transit_decision(place_name: str, anchor=None) -> tuple:
     alternatives?})`` | ``("none", None)``."""
     if not place_name or not place_name.strip():
         return ("none", None)
+
+    here = _coords_from_text(place_name)
+    if here is not None:
+        rows = _run_read(_NEAREST_STOP_Q, {"lat": here[0], "lon": here[1]}, timeout=8.0)
+        if not rows:
+            return ("none", None)
+        r = rows[0]
+        return ("resolved", {
+            "name": "your location", "type": "coordinates", "lat": here[0], "lon": here[1],
+            "nearest_stop": {"name": r["stop_name"], "lat": r["stop_lat"],
+                             "lon": r["stop_lon"], "walk_m": r["walk_m"] or 0},
+            "alternatives": []})
 
     # House numbers never resolve in-graph (the resolver's numeric-token gate
     # rejects them) — don't burn the graph query for address-shaped input.

@@ -84,6 +84,7 @@ class ElevenLabsClient:
         *,
         language_code: Optional[str] = None,
         previous_text: Optional[str] = None,
+        model_id: Optional[str] = None,
     ) -> bytes:
         """Synthesize `text` and return the complete MP3 (44.1 kHz, 128 kbps).
 
@@ -95,9 +96,10 @@ class ElevenLabsClient:
         """
         if not self.available:
             raise VoiceError("ElevenLabs API key not configured")
+        model = model_id or self.tts_model   # per-call override: fast model for reactions
         body: dict = {
             "text": text,
-            "model_id": self.tts_model,
+            "model_id": model,
             "voice_settings": {"stability": self.stability,
                                "similarity_boost": _SIMILARITY_BOOST},
         }
@@ -105,7 +107,7 @@ class ElevenLabsClient:
         # "unsupported_model", verified 2026-07-12) — sending it would fail
         # every sentence chunk after the first. v3's own expressiveness (and
         # the audio tags) carry the tone instead of prosody stitching.
-        if previous_text and not self.tts_model.startswith("eleven_v3"):
+        if previous_text and not model.startswith("eleven_v3"):
             body["previous_text"] = previous_text
         # language_code pins the output language (supported on the v2.5
         # flash/turbo models) — keeps German street names from drifting into

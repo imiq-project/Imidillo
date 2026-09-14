@@ -46,6 +46,7 @@ class AppContext:
     semantic_cache: Any = None
     checkpointer: Any = None
     single_agent: Any = None  # the gpt-5.4 ReAct agent (for the token-streaming path)
+    voice_agent: Any = None   # same tools, spoken-output system prompt (voice turns)
 
 
 def create_app(

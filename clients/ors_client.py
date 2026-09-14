@@ -12,6 +12,7 @@ client only. Callers ALWAYS pass `lat, lon`.
 """
 
 import asyncio
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -344,7 +345,7 @@ class ORSClient:
         except httpx.TimeoutException:
             return {"success": False, "error": "ORS request timed out"}
         except Exception as exc:  # noqa: BLE001
-            print(f"ORS route error: {exc}")
+            print(f"ORS route error: {exc}", file=sys.stderr)
             return {"success": False, "error": str(exc)}
         if response.status_code != 200:
             return {"success": False, "error": f"ORS API error: {response.status_code}"}

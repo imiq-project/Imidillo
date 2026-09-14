@@ -610,8 +610,11 @@
 
 .dashbot-context-bar {
     display: flex;
-    justify-content: flex-end;
-    margin-bottom: 6px;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
 }
 
 .dashbot-location-btn {
@@ -669,44 +672,34 @@
     color: #fff;
 }
 
-/* ---- Voice: mic button (matches the location button's look) ---- */
+/* ---- Voice: "Speak" button (context bar) — enters speaking mode ----
+   Tap, not hold: the chat slides away and the AVATAR becomes the hold-to-talk
+   surface (see the speaking-mode block at the end of this file). */
 
-.dashbot-mic-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+.dashbot-speak-btn {
+    height: 34px;
+    padding: 0 14px 0 11px;
+    border-radius: 17px;
     border: none;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
+    gap: 7px;
     flex-shrink: 0;
-    color: #6b7280;
-    background: #e5e7eb;
-}
-
-.dashbot-mic-btn:hover {
-    transform: scale(1.06);
-}
-
-.dashbot-mic-btn.mic-recording {
-    background: #ef4444;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
     color: #fff;
-    animation: dashbot-mic-pulse 1.2s ease-in-out infinite;
+    background: linear-gradient(135deg, var(--db-primary), var(--db-accent));
+    box-shadow: 0 2px 8px rgba(122, 0, 63, 0.3);
+    transition: transform 0.15s, box-shadow 0.2s;
+    -webkit-tap-highlight-color: transparent;
 }
-
-@keyframes dashbot-mic-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
-    50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
-}
-
-/* Transcribing (server STT round-trip) */
-.dashbot-mic-btn.mic-busy {
-    background: #fbbf24;
-    color: #fff;
-    animation: dashbot-pulse 1.2s ease-in-out infinite;
-}
+.dashbot-speak-btn:hover { transform: scale(1.03); }
+.dashbot-speak-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(98, 60, 234, 0.35); }
 
 /* ---- Map pins (category emoji chips on the host Leaflet map) ----
    Rendered via L.divIcon OUTSIDE the widget panel, so these classes must not
@@ -753,6 +746,93 @@
 @keyframes db-pin-pop {
     from { transform: scale(0); opacity: 0; }
     to   { transform: scale(1); opacity: 1; }
+}
+
+/* ---- Route reveal: the mode chip riding the line's tip (walker / cyclist /
+   car). Same glass look as the pins but centered (no tail) and ringed in the
+   route's color (set inline as --db-route-color). Bobs while it travels,
+   pops once when it parks at the destination. Rendered via L.divIcon
+   OUTSIDE the widget panel — no .dashbot-* ancestor. ---- */
+
+.db-traveler {
+    background: none;
+    border: none;
+    transition: opacity 0.25s ease;   /* fade at the end of each lap, before the jump back */
+}
+
+.db-traveler-chip {
+    --db-route-color: #623cea;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    line-height: 1;
+    background: rgba(255, 255, 255, 0.95);
+    border: 2px solid var(--db-route-color);
+    border-radius: 50%;
+    box-shadow: 0 3px 10px rgba(20, 10, 40, 0.35), 0 0 0 3px rgba(255, 255, 255, 0.55);
+    animation: db-traveler-bob 0.7s ease-in-out infinite;
+}
+
+.db-traveler-parked .db-traveler-chip {
+    animation: db-traveler-park 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes db-traveler-bob {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-3px); }
+}
+
+@keyframes db-traveler-park {
+    0%   { transform: scale(1); }
+    50%  { transform: scale(1.35); }
+    100% { transform: scale(1); }
+}
+
+/* Driving: light dashes flowing along the solid line show the direction of
+   travel. Leaflet puts this class on the SVG <path> itself, and its
+   stroke-dasharray is 6 14 (period 20), so one period per second. */
+.db-route-flow {
+    animation: db-route-flow 1s linear infinite;
+}
+
+@keyframes db-route-flow {
+    from { stroke-dashoffset: 0; }
+    to   { stroke-dashoffset: -20; }
+}
+
+/* Walking dots and cycling dashes march along their line too (looping), at
+   the mode's pace. Periods = dash + gap of each texture (1+13, 10+11). */
+.db-route-line-walking {
+    animation: db-route-march-walk 1.6s linear infinite;
+}
+.db-route-line-cycling {
+    animation: db-route-march-bike 0.8s linear infinite;
+}
+
+@keyframes db-route-march-walk {
+    from { stroke-dashoffset: 0; }
+    to   { stroke-dashoffset: -14; }
+}
+
+@keyframes db-route-march-bike {
+    from { stroke-dashoffset: 0; }
+    to   { stroke-dashoffset: -21; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .db-traveler-chip,
+    .db-traveler-parked .db-traveler-chip,
+    .db-route-flow,
+    .db-route-line-walking,
+    .db-route-line-cycling {
+        animation: none;
+    }
+    .db-traveler {
+        transition: none;
+    }
 }
 
 /* ---- Location Toast ---- */
@@ -1436,6 +1516,27 @@
 }
 .dashbot-theme-btn:hover { background: rgba(255, 255, 255, 0.25); }
 
+/* Language switch (EN/DE) in the header: same look as the icon buttons, text instead */
+.dashbot-lang-btn {
+    background: rgba(255, 255, 255, 0.12);
+    border: none;
+    color: #fff;
+    height: 32px;
+    min-width: 36px;
+    padding: 0 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    transition: background 0.2s;
+}
+.dashbot-lang-btn:hover { background: rgba(255, 255, 255, 0.25); }
+
 /* ============================================================================
    Voice: speaker (spoken replies) toggle in the header
    ============================================================================ */
@@ -1538,7 +1639,6 @@
     color: #cdb6c6;
     box-shadow: inset 0 0 0 1px rgba(205, 182, 198, 0.3);
 }
-.dashbot-dark .dashbot-mic-btn:not(.mic-recording):not(.mic-busy) { background: rgba(255, 255, 255, 0.08); color: #cdb6c6; }
 
 /* Cards on dark */
 .dashbot-dark .db-cards { border-top-color: rgba(255, 255, 255, 0.08); }
@@ -1590,28 +1690,12 @@
 .dashbot-dark .db-live-chip.db-live-bad  { color: #fca5a5; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.28); }
 
 /* ============================================================================
-   Speaking mode (v7.3) — hands-free, ChatGPT-style. NO window, NO box: the
-   chat panel slides away and only the AVATAR sits in the screen corner with
-   its state ring — the page/map stays fully visible and interactive. States:
-   idle · listening (sonar pulse) · thinking (orbiting ring) · speaking
-   (glow + bob). No subtitles.
+   Speaking mode — voice only. The chat panel slides away and only the AVATAR
+   stays in the screen corner: HOLD it to talk, release to send, the answer is
+   spoken. Ring + hint pill show the state: idle (hold to talk) · listening
+   (red sonar) · thinking (orbiting ring) · speaking (glow + bob, hold to
+   interrupt). A Keyboard pill returns to the chat; the map stays interactive.
    ============================================================================ */
-
-/* Header toggle (same look as the theme/speaker buttons) */
-.dashbot-voicemode-btn {
-    background: rgba(255, 255, 255, 0.12);
-    border: none;
-    color: #fff;
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background 0.2s ease;
-}
-.dashbot-voicemode-btn:hover { background: rgba(255, 255, 255, 0.25); }
 
 /* While speaking mode is up, the chat panel slides fully away (it stays
    mounted so the transcript keeps accumulating out of sight). */
@@ -1619,25 +1703,29 @@
     transform: translateX(105%) !important;
 }
 
-/* ---- Corner cluster: exit pill above, avatar below. Nothing else. ---- */
+/* ---- Corner cluster: exit pill, avatar stage, state hint. Nothing else. ---- */
 .dashbot-speakmode {
     position: fixed;
-    right: 26px;
-    bottom: 26px;
+    right: 24px;
+    bottom: 24px;
     display: none;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     z-index: 10000;
 }
 .dashbot-speakmode.open { display: flex; }
 
-/* ---- Avatar stage (tap to interrupt / talk) ---- */
+/* ---- Avatar stage: the hold-to-talk surface ---- */
 .dashbot-speak-stage {
     position: relative;
-    width: 140px;
-    height: 140px;
+    width: 150px;
+    height: 150px;
     cursor: pointer;
+    touch-action: none;                 /* hold on touch: no scroll/zoom, no text selection */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
 }
 .dashbot-speak-stage:focus-visible {
@@ -1657,6 +1745,7 @@
     filter: drop-shadow(0 4px 10px rgba(20, 10, 40, 0.35));
     animation: db-breathe 4.5s ease-in-out infinite;
     will-change: transform;
+    pointer-events: none;
 }
 
 .dashbot-voice-ring {
@@ -1668,18 +1757,18 @@
     transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
-/* Listening: sonar pulse, accent-colored */
+/* Listening (avatar held): red sonar pulse */
 .dashbot-speakmode.state-listening .dashbot-voice-ring {
-    border-color: rgba(98, 60, 234, 0.65);
-    animation: db-voice-sonar 1.6s ease-out infinite;
+    border-color: rgba(239, 68, 68, 0.85);
+    animation: db-voice-sonar 1.2s ease-out infinite;
 }
 @keyframes db-voice-sonar {
-    0%   { transform: scale(1);    box-shadow: 0 0 0 0 rgba(98, 60, 234, 0.35); }
-    70%  { transform: scale(1.06); box-shadow: 0 0 0 14px rgba(98, 60, 234, 0); }
-    100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(98, 60, 234, 0); }
+    0%   { transform: scale(1);    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+    70%  { transform: scale(1.06); box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+    100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
-/* Thinking: the familiar orbiting holographic ring (same as the launcher) */
+/* Thinking: the orbiting holographic ring (same as the launcher) */
 .dashbot-speakmode.state-thinking .dashbot-voice-ring {
     border-color: transparent;
     background: conic-gradient(from 0deg,
@@ -1703,8 +1792,9 @@
     50%      { box-shadow: 0 0 22px 2px rgba(122, 0, 63, 0.5); }
 }
 
-/* ---- Exit pill: floats over the map, legible on any tile style ---- */
-.dashbot-speak-exit {
+/* ---- Pills: Keyboard (exit) above, state hint below — legible on any tile style ---- */
+.dashbot-speak-exit,
+.dashbot-speak-hint {
     display: inline-flex;
     align-items: center;
     gap: 7px;
@@ -1716,6 +1806,9 @@
     color: #55506a;
     font-size: 12px;
     font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    white-space: nowrap;
+}
+.dashbot-speak-exit {
     cursor: pointer;
     transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
@@ -1724,11 +1817,23 @@
     border-color: rgba(98, 60, 234, 0.35);
     color: #623cea;
 }
+.dashbot-speak-hint {
+    font-weight: 700;
+    pointer-events: none;
+    transition: background 0.2s ease, color 0.2s ease;
+}
+.dashbot-speakmode.state-listening .dashbot-speak-hint { background: #ef4444; color: #fff; border-color: transparent; }
+.dashbot-speakmode.state-thinking  .dashbot-speak-hint { background: #fbbf24; color: #fff; border-color: transparent; }
+.dashbot-speakmode.state-speaking  .dashbot-speak-hint {
+    background: linear-gradient(135deg, var(--db-primary), var(--db-accent));
+    color: #fff;
+    border-color: transparent;
+}
 
 /* ---- Small screens ---- */
 @media (max-width: 480px) {
     .dashbot-speakmode { right: 16px; bottom: 16px; }
-    .dashbot-speak-stage { width: 108px; height: 108px; }
+    .dashbot-speak-stage { width: 116px; height: 116px; }
     .dashbot-voice-avatar { inset: 12px; }
 }
 
