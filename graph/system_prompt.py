@@ -8,33 +8,23 @@ gives a single GPT-5.4 agent direct access to all 15 tools.
 Schema is sourced from mcp_servers/neo4j_server.py at module import,
 mirroring the cache pattern from the legacy neo4j_agent.py so the schema
 text only renders once per process. Refresh via refresh_schema_cache()
-after a graph migration.
+after a graph migration. The "Valid labels / Valid rels" lists come from the
+same module's execute_cypher allow-list, so the prompt can never advertise a
+label or relationship type that the server would reject.
 """
 
 from __future__ import annotations
 
 import logging
 
-from mcp_servers.neo4j_server import build_structural_schema, build_value_catalog
+from mcp_servers.neo4j_server import (
+    VALID_LABELS,
+    VALID_REL_TYPES,
+    build_structural_schema,
+    build_value_catalog,
+)
 
 logger = logging.getLogger(__name__)
-
-
-_ALLOWED_LABELS = [
-    "Stop", "Line", "Street", "Landmark", "Area",
-    "Building", "POI",
-]
-
-_ALLOWED_RELATIONSHIPS = [
-    "SERVED_BY", "NEXT_STOP", "WALKING_DISTANCE", "BORDERED_BY",
-    "SAME_STRUCTURE", "CONNECTED_INTERNALLY", "CONTIGUOUS_TO",
-    "PROVIDES_COOLING_TO", "RECEIVES_COOLING_FROM", "SURROUNDS",
-    "SURROUNDED_BY", "LOOKS_ALIKE", "HAS_LANDMARK", "FACES",
-    "BEHIND_LANDMARK", "VIEWS", "CONTAINS", "NEAREST_STOP",
-    "NEAR_BUILDING", "ON_STREET", "INTERSECTS", "NEARBY",
-    "ADJACENT_TO", "NEAREST_BUILDING", "ACCESSIBLE_ROUTE",
-    "ACCESSIBLE_STOP", "IN_BUILDING",
-]
 
 
 SYSTEM_PROMPT_TEMPLATE = """You are the Magdeburg Campus Assistant — a mobility and information agent for Otto-von-Guericke University (OVGU) campus and Magdeburg city.
@@ -356,8 +346,10 @@ def _render(schema: str, values: str) -> str:
         SYSTEM_PROMPT_TEMPLATE
         .replace("{{SCHEMA}}", schema)
         .replace("{{VALUES}}", values)
-        .replace("{{ALLOWED_LABELS}}", ", ".join(_ALLOWED_LABELS))
-        .replace("{{ALLOWED_RELATIONSHIPS}}", ", ".join(_ALLOWED_RELATIONSHIPS))
+        # Sorted: the sets' iteration order varies per process, and a stable
+        # prompt keeps OpenAI's prefix cache warm across restarts.
+        .replace("{{ALLOWED_LABELS}}", ", ".join(sorted(VALID_LABELS)))
+        .replace("{{ALLOWED_RELATIONSHIPS}}", ", ".join(sorted(VALID_REL_TYPES)))
     )
 
 

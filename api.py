@@ -909,10 +909,14 @@ def _extract_cards_from_tool(tool_name, raw_output):
     # City events → pin each event at its venue.
     if "get_city_events" in name and isinstance(data, dict):
         return _card_places_generic(data.get("events") or [], cap=10, kind="event")
+    # Context bridge → its resolved location + the auto-pick's runners-up.
+    if "get_nearby_context" in name and isinstance(data, dict):
+        return (_card_places_generic(data)
+                + _card_places_generic(data.get("alternatives") or [], cap=3))
     # Open-ended results → pin EVERY place that carries coordinates (POIs,
-    # buildings, landmarks via Cypher; the context bridge's resolved location).
-    # Generic, so any place the agent surfaces shows on the map.
-    if "execute_cypher" in name or "get_nearby_context" in name:
+    # buildings, landmarks via Cypher). Generic, so any place the agent
+    # surfaces shows on the map.
+    if "execute_cypher" in name:
         return _card_places_generic(data)
     return []
 

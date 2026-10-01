@@ -33,9 +33,8 @@ def _q(cypher: str, timeout: float = _DEFAULT_QUERY_TIMEOUT) -> Query:
 
 mcp = FastMCP("neo4j-campus", instructions=(
     "Static campus data: Buildings, Stops, POIs, Streets, Landmarks, Areas, "
-    "Sensors (metadata only), and transit Lines. Sensor nodes store metadata "
-    "(IDs, types); LIVE sensor values (weather, parking, traffic) live in "
-    "FIWARE — do NOT ask this server for current readings."
+    "and transit Lines. LIVE sensor values (weather, parking, traffic) live "
+    "in FIWARE — do NOT ask this server for current readings."
 ))
 
 # ---------------------------------------------------------------------------
@@ -229,8 +228,6 @@ _VALUE_CATALOG_SPECS = [
     ("node", "POI",      "dietary_options", True),
     ("node", "Building", "fiware_type",     False),
     ("node", "Line",     "type",            False),
-    ("node", "Sensor",   "type",            False),
-    ("node", "Sensor",   "category",        False),
     ("node", "Street",   "highway_type",    False),
     ("rel",  "NEARBY",   "category",        False),
     ("rel",  "NEARBY",   "tier",            False),
@@ -371,17 +368,24 @@ except Exception as _schema_err:  # pragma: no cover — startup-best-effort
 
 # ---------------------------------------------------------------------------
 # Schema allow-list for validating LLM-generated Cypher (H21).
+#
+# SINGLE SOURCE OF TRUTH: graph/system_prompt.py renders these two sets into
+# the prompt's CYPHER RULES, so the agent is told exactly what this check
+# accepts. (They used to be two hand-kept copies that drifted: the prompt
+# taught IN_BUILDING with worked examples while this check rejected it.)
+# The graph also holds Brand / District nodes and BRANCH_OF edges
+# (ingestion/osm_sync); they're deliberately not exposed to the agent yet.
 # ---------------------------------------------------------------------------
-_VALID_LABELS = frozenset({
-    "Stop", "Line", "Street", "Landmark", "Area", "Building", "POI", "Sensor",
+VALID_LABELS = frozenset({
+    "Stop", "Line", "Street", "Landmark", "Area", "Building", "POI",
 })
-_VALID_REL_TYPES = frozenset({
+VALID_REL_TYPES = frozenset({
     "SERVED_BY", "NEXT_STOP", "WALKING_DISTANCE", "BORDERED_BY", "SAME_STRUCTURE",
     "CONNECTED_INTERNALLY", "CONTIGUOUS_TO", "PROVIDES_COOLING_TO",
     "RECEIVES_COOLING_FROM", "SURROUNDS", "SURROUNDED_BY", "LOOKS_ALIKE",
     "HAS_LANDMARK", "FACES", "BEHIND_LANDMARK", "VIEWS", "CONTAINS", "NEAREST_STOP",
     "NEAR_BUILDING", "ON_STREET", "INTERSECTS", "NEARBY", "ADJACENT_TO",
-    "NEAREST_BUILDING", "ACCESSIBLE_ROUTE", "ACCESSIBLE_STOP",
+    "NEAREST_BUILDING", "ACCESSIBLE_ROUTE", "ACCESSIBLE_STOP", "IN_BUILDING",
 })
 
 # Patterns to pull out label/reltype references from a Cypher source string.
@@ -478,8 +482,8 @@ def _validate_cypher_allow_list(query: str) -> dict | None:
             }
 
     labels, rels = _extract_labels_and_rels(query)
-    invalid_labels = sorted(l for l in labels if l not in _VALID_LABELS)
-    invalid_rels = sorted(r for r in rels if r not in _VALID_REL_TYPES)
+    invalid_labels = sorted(l for l in labels if l not in VALID_LABELS)
+    invalid_rels = sorted(r for r in rels if r not in VALID_REL_TYPES)
 
     if invalid_labels or invalid_rels:
         return {
@@ -488,8 +492,8 @@ def _validate_cypher_allow_list(query: str) -> dict | None:
                 "labels": invalid_labels,
                 "relationship_types": invalid_rels,
             },
-            "valid_labels": sorted(_VALID_LABELS),
-            "valid_relationship_types": sorted(_VALID_REL_TYPES),
+            "valid_labels": sorted(VALID_LABELS),
+            "valid_relationship_types": sorted(VALID_REL_TYPES),
         }
     return None
 

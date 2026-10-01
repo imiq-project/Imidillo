@@ -5,8 +5,8 @@ backup), replacing the public OSM Nominatim instance in that role.
 
 Runs on the university's own IMIQ platform (same host family as the FIWARE
 broker), so there is no usage-policy throttle and no external API key. It
-shares Nominatim's crucial virtue: it returns NOTHING rather than a junk
-match for names it doesn't know (verified: nonsense queries -> []), and it
+shares Nominatim's crucial virtue once the city-centroid hits are filtered
+out (see `_search`): no junk match for names it doesn't know, and it
 resolves German civic/POI names correctly ("Ausländerbehörde Magdeburg" ->
 Lübecker Straße).
 
@@ -141,13 +141,14 @@ class IMIQGeocodeClient:
                 continue
             label = h.get("display_name") or ""
             name = h.get("name") or ""
-            # A query that matches nothing but the appended city token can
-            # return the Magdeburg admin relation itself ("building 27
-            # magdeburg" -> the city centroid). That's a junk pin, not a
-            # resolution — drop it unless the user literally asked for
-            # Magdeburg. District relations (Stadtfeld Ost, ...) stay.
-            if (h.get("type") == "administrative"
-                    and name.strip().lower() == "magdeburg"
+            # A query that matches nothing but the appended city token returns
+            # the city itself ("building 27 magdeburg" -> the city centroid):
+            # a junk pin, not a resolution — drop it unless the user literally
+            # asked for Magdeburg. Any type: the service used to tag it
+            # "administrative", but since ~2026-09 sends up to five "Magdeburg"
+            # hits typed "" / "city", which also padded real answers'
+            # runners-up. District relations (Stadtfeld Ost, ...) stay.
+            if (name.strip().lower() == "magdeburg"
                     and query.strip().lower() != "magdeburg"):
                 continue
             hits.append({

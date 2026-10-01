@@ -1,8 +1,8 @@
 """
 Context Bridge MCP Server for the Magdeburg Campus Mobility Assistant.
-Bridges Neo4j (location resolution), FIWARE (real-time sensors), and the
-IMIQ router (walking distance) to provide unified spatial context in one
-tool call.
+Bridges place resolution (the shared canonical resolver: Neo4j first, then the
+geocoder chain), FIWARE (real-time sensors), and the IMIQ router (walking
+distance) to provide unified spatial context in one tool call.
 """
 
 import json
@@ -20,6 +20,16 @@ from clients.fiware_client import FIWAREClient
 from clients.imiq_client import IMIQRoutingClient, _fmt_distance, _fmt_duration
 from models import Coordinates
 from mcp_servers._traffic_helpers import haversine_m
+from mcp_servers._place_resolver import (
+    decide_place,
+    resolve_place_candidates,
+)
+from mcp_servers._geocode import (
+    geocode_fallback,
+    geocode_fallback_candidates,
+    looks_like_street_address,
+    short_label,
+)
 from config import (
     NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE,
     FIWARE_BASE_URL, FIWARE_API_KEY,
@@ -101,20 +111,63 @@ def _coords_location(text: str) -> dict | None:
     return {"type": "coordinates", "name": "your location", "lat": lat, "lon": lon}
 
 
+def _candidate_payload(c: dict) -> dict:
+    """Shape one runner-up like the routing/neo4j servers do, so api.py pins it."""
+    out = {"name": c.get("name") or short_label(c.get("label", "")), "type": c.get("type"),
+           "latitude": c.get("lat"), "longitude": c.get("lon")}
+    if c.get("district"):
+        out["district"] = c["district"]
+    return out
+
+
 def _resolve_location(name: str) -> dict | None:
-    """Resolve a location name to coordinates via Neo4j (searches all node types)."""
-    search = name.lower()
-    rows = _neo4j_read("""
-        MATCH (n)
-        WHERE (toLower(n.name) CONTAINS $search
-           OR ANY(a IN COALESCE(n.aliases, []) WHERE toLower(a) CONTAINS $search))
-          AND n.latitude IS NOT NULL AND n.longitude IS NOT NULL
-        RETURN labels(n)[0] AS type, n.name AS name, n.latitude AS lat, n.longitude AS lon
-        LIMIT 1
-    """, {"search": search})
-    if rows:
-        return rows[0]
-    return None
+    """Resolve a place name through the SHARED canonical resolver — the same
+    candidates as every other location-taking tool, so "what's near the
+    mensa?" lands on the same place as "where is the mensa?": Neo4j candidates
+    (similarity-gated, curated campus nodes before OSM imports), then the
+    IMIQ/Nominatim geocoder for off-graph places. Street addresses go straight
+    to the geocoder. Several matches AUTO-PICK the best match; the runners-up
+    come back in `alternatives`.
+
+    No user-location anchor on purpose: decide_place's nearest-pick ranks
+    every candidate by distance, so "Opernhaus" near the user would pick
+    "Kirsten Augenoptik am Opernhaus" over the Opernhaus itself.
+
+    Returns ``{name, type, lat, lon, district?, used_method, alternatives}``
+    or None when nothing resolves.
+    """
+    if looks_like_street_address(name):
+        geo = geocode_fallback(name)
+        if geo:
+            return {"name": short_label(geo.get("label", "")) or name, "type": "geocoded",
+                    "lat": geo["lat"], "lon": geo["lon"], "district": geo.get("district"),
+                    "used_method": geo["source"], "alternatives": []}
+        # Fall through: not a geocodable address after all — try it as a name.
+
+    try:
+        cands = resolve_place_candidates(_neo4j_read, name)
+    except Exception:
+        cands = []   # resolution must never crash the bridge — try the geocoder
+    method = "neo4j"
+    if not cands:
+        cands = geocode_fallback_candidates(name)
+        method = None   # per-candidate source: "imiq" | "nominatim"
+    if not cands:
+        return None
+
+    dec = decide_place(cands)
+    if dec["status"] != "resolved":
+        return None
+    p = dec["place"]
+    return {
+        "name": p.get("name") or short_label(p.get("label", "")) or name,
+        "type": p.get("type"),
+        "lat": p["lat"],
+        "lon": p["lon"],
+        "district": p.get("district"),
+        "used_method": method or p.get("source", "geocoder"),
+        "alternatives": [_candidate_payload(c) for c in dec.get("alternatives") or []],
+    }
 
 
 def _parse_fiware_location(loc) -> tuple:
@@ -190,8 +243,14 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
     """Get real-time spatial context for a location: nearby parking, weather,
     air quality, traffic, and walking distances — all in one call.
 
-    Resolves the location name to coordinates via the Neo4j knowledge graph,
-    then queries FIWARE for nearby sensors and ORS for walking distances.
+    Resolves the location name to coordinates (Neo4j knowledge graph first,
+    city-wide geocoder for off-graph places and street addresses), then
+    queries FIWARE for nearby sensors and the IMIQ router for walking distances.
+    For the user's own position pass "lat, lon" as `location`.
+
+    If the name matches SEVERAL distinct places (a chain like "Lidl"), the
+    tool AUTO-PICKS the best match; the runners-up come back in
+    `alternatives`. Answer with the pick, never ask "which one?" first.
     Sensor fetches run in parallel with a 3-second per-sensor timeout so a
     single slow broker response cannot stall the whole call — any sensor
     that times out is reported as `{"found": false, "error": "timeout"}`
@@ -204,7 +263,7 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
         is to surface the closest lot even if it is further than the
         requested search area. Every lot is flagged with `within_radius`
         so the caller can distinguish in-radius hits from fallback hits.
-        Walk-distance (ORS) is computed ONLY for the single in-radius
+        Walk-distance (IMIQ router) is computed ONLY for the single in-radius
         sensor — not for fallback lots — to keep latency bounded.
 
     Args:
@@ -212,16 +271,20 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
         radius: Search radius in meters (default 1000)
 
     Returns:
-        JSON with location coordinates and nearby real-time sensor data
-        including walking distance to parking and a `parking_fallback`
-        block with `within_radius: bool` per item when applicable.
+        JSON with location coordinates (+ `used_method`, `alternatives`) and
+        nearby real-time sensor data including walking distance to parking
+        and a `parking_fallback` block with `within_radius: bool` per item
+        when applicable.
     """
-    # Step 1: Resolve location to coordinates via Neo4j (a bare "lat, lon"
-    # pair — the user's own position — is used as-is).
+    # Step 1: Resolve the location (a bare "lat, lon" pair — the user's own
+    # position — is used as-is; everything else via the shared resolver).
     resolved = _coords_location(location) or _resolve_location(location)
     if not resolved:
         return json.dumps({
-            "error": f"Could not find location '{location}' in the knowledge graph.",
+            "error": f"Could not find location '{location}'.",
+            "tried": ["neo4j", "imiq_geocoder", "nominatim"],
+            "hint": "If this is an English description, retry with the German "
+                    "name (e.g. \"Foreigners' Office\" -> 'Ausländerbehörde').",
         })
 
     lat, lon = resolved["lat"], resolved["lon"]
@@ -324,6 +387,12 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
         },
         "sensors": {},
     }
+    if resolved.get("district"):
+        context["location"]["district"] = resolved["district"]
+    if resolved.get("used_method"):
+        context["location"]["used_method"] = resolved["used_method"]
+    if resolved.get("alternatives"):
+        context["alternatives"] = resolved["alternatives"]
 
     for sensor_type, result in sensor_results.items():
         if result.get("found"):
