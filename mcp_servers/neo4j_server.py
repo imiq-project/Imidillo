@@ -17,7 +17,12 @@ from neo4j import GraphDatabase, Query, READ_ACCESS
 from config import (
     NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE,
 )
-from mcp_servers._place_resolver import resolve_place_candidates, decide_place
+from mcp_servers._place_resolver import (
+    decide_place,
+    is_self_reference,
+    need_user_location,
+    resolve_place_candidates,
+)
 from mcp_servers._geocode import (
     geocode_fallback_candidates,
     looks_like_street_address,
@@ -870,12 +875,18 @@ def _transit_endpoint(search_term: str, resolved: dict) -> dict:
 @mcp.tool()
 def find_transit_route(origin: str, destination: str,
                        near_lat: float | None = None,
-                       near_lon: float | None = None) -> str:
+                       near_lon: float | None = None,
+                       origin_lat: float | None = None,
+                       origin_lon: float | None = None) -> str:
     """Find the shortest transit route between two locations using Neo4j graph traversal.
     Accepts stop names, building names, or POI names — resolves them to the nearest stop automatically.
     Returns step-by-step directions with lines, transfer points, and walking segments.
 
     Use this tool for ANY transit routing question instead of manually writing NEXT_STOP path queries.
+
+    Trip FROM THE USER'S POSITION: pass their shared coordinates as
+    `origin_lat`/`origin_lon` (origin "my location") — the route then boards at
+    the stop nearest to them. Never pass their address text as the origin.
 
     Disambiguation: if a name matches several distinct places (a chain like
     "Lidl" / "World of Pizza"), the tool AUTO-PICKS — the origin as the branch
@@ -892,6 +903,8 @@ def find_transit_route(origin: str, destination: str,
             No known origin → ask the user first instead of calling this.
         destination: Destination, e.g. 'Opernhaus', 'Alter Markt', 'IMIQ', 'Building 22'
         near_lat, near_lon: optional user location, to pick the nearest branch.
+        origin_lat, origin_lon: the user's own coordinates when the trip starts
+            from where they are. Leave empty when the origin is a named place.
 
     Returns:
         JSON with route segments, transfer points, total stops, and walking
@@ -902,18 +915,44 @@ def find_transit_route(origin: str, destination: str,
                          "'Ausländerbehörde').")
     user_anchor = _anchor(near_lat, near_lon)
 
+    # The user's own position: explicit origin coordinates, else a self-
+    # reference ("my location", "hier") mapped onto their shared location —
+    # never name-resolved (that boarded every such trip at a junk geocoder hit).
+    origin_here = _anchor(origin_lat, origin_lon)
+    if origin_here is None and is_self_reference(origin):
+        origin_here = user_anchor
+        if origin_here is None:
+            return json.dumps(need_user_location("origin"))
+    dest_here = None
+    if is_self_reference(destination):
+        dest_here = user_anchor
+        if dest_here is None:
+            return json.dumps(need_user_location("destination"))
+
     # Origin — anchored ONLY on the user (never guessed off the destination).
-    o_status, origin_r = _resolve_transit_decision(origin, user_anchor)
+    if origin_here is not None:
+        o_status, origin_r = _resolve_transit_decision(f"{origin_here[0]}, {origin_here[1]}")
+    else:
+        o_status, origin_r = _resolve_transit_decision(origin, user_anchor)
     if o_status == "none":
         return json.dumps({"error": f"Could not resolve origin '{origin}' to a transit stop.",
                            "hint": _GERMAN_NAME_HINT})
 
     # Destination — anchored on the user, else the resolved origin (nearest to start).
-    dest_anchor = user_anchor or (origin_r["lat"], origin_r["lon"])
-    d_status, dest_r = _resolve_transit_decision(destination, dest_anchor)
+    if dest_here is not None:
+        d_status, dest_r = _resolve_transit_decision(f"{dest_here[0]}, {dest_here[1]}")
+    else:
+        dest_anchor = user_anchor or (origin_r["lat"], origin_r["lon"])
+        d_status, dest_r = _resolve_transit_decision(destination, dest_anchor)
     if d_status == "none":
         return json.dumps({"error": f"Could not resolve destination '{destination}' to a transit stop.",
                            "hint": _GERMAN_NAME_HINT})
+
+    # Card labels: a coordinate pair or a self-reference reads "your location".
+    if origin_here is not None or _coords_from_text(origin) or not (origin or "").strip():
+        origin = origin if (is_self_reference(origin) and origin.strip()) else "your location"
+    if dest_here is not None or _coords_from_text(destination):
+        destination = destination if is_self_reference(destination) else "your location"
 
     o = origin_r["nearest_stop"]["name"]
     d = dest_r["nearest_stop"]["name"]

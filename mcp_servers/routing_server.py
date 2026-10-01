@@ -37,7 +37,13 @@ from config import (
     NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE,
 )
 from mcp_servers._traffic_helpers import summarize_traffic_entity, haversine_m
-from mcp_servers._place_resolver import resolve_place, resolve_place_candidates, decide_place
+from mcp_servers._place_resolver import (
+    decide_place,
+    is_self_reference,
+    need_user_location,
+    resolve_place,
+    resolve_place_candidates,
+)
 from mcp_servers._geocode import (
     geocode_fallback,
     geocode_fallback_candidates,
@@ -302,6 +308,8 @@ def _nearest_online_parking(lat: float, lon: float, radius_m: int = 800) -> dict
                 "free_spots": e.get("freeSpots"),
                 "total_spots": e.get("totalSpots"),
                 "distance_m": round(d),
+                "lat": plat,   # for the parking pin on the map (api.py route card)
+                "lon": plon,
             }
     if best:
         return {"found": True, "within_radius": best["distance_m"] <= radius_m, **best}
@@ -592,6 +600,8 @@ def geocode(place_name: str) -> str:
         if not found. German place names resolve far better than English
         descriptions — retry with the German name on a miss.
     """
+    if is_self_reference(place_name):
+        return json.dumps(need_user_location("place"))
     hit = geocode_fallback(place_name)
     if hit:
         return json.dumps({
@@ -640,6 +650,17 @@ def resolve_place_to_coordinates(place_name: str,
         Not found: {"success": false, "error": "...", "tried": [...]}
     """
     anchor = _anchor(near_lat, near_lon)
+
+    # The user's own position ("my location") is their coordinates, not a name.
+    if is_self_reference(place_name):
+        if anchor is None:
+            return json.dumps(need_user_location("place"))
+        return json.dumps({
+            "success": True, "place": place_name,
+            "coordinates": [anchor[0], anchor[1]],
+            "latitude": anchor[0], "longitude": anchor[1],
+            "used_method": "user_location", "matched_name": "your location",
+        })
 
     # 0. Street addresses (suffix + house number) are geocoder territory —
     #    a single, inherently unambiguous hit; no graph query needed.
@@ -1067,7 +1088,13 @@ def get_routes_for_places(origin_name: str, destination_name: str,
     # 1. Origin — the user's own coordinates when given (nothing to resolve,
     #    nothing to get wrong), else resolved by name, anchored ONLY on the
     #    user (don't guess which branch they START from off the destination).
+    #    A self-reference ("my location") without origin coordinates means the
+    #    user's shared location — never a name lookup.
     origin_here = _anchor(origin_lat, origin_lon)
+    if origin_here is None and is_self_reference(origin_name):
+        origin_here = user_anchor
+        if origin_here is None:
+            return json.dumps(need_user_location("origin"))
     if origin_here is not None:
         o_status, o_data = "resolved", {
             "name": (origin_name or "").strip() or "your location",
@@ -1080,9 +1107,16 @@ def get_routes_for_places(origin_name: str, destination_name: str,
                            "which": "origin", "place": origin_name})
 
     # 2. Destination — anchored on the user, else on the resolved origin (the
-    #    branch nearest the start).
-    dest_anchor = user_anchor or (o_data["lat"], o_data["lon"])
-    d_status, d_data = _resolve_endpoint_decision(destination_name, dest_anchor)
+    #    branch nearest the start). "Back to me" = the user's coordinates.
+    if is_self_reference(destination_name):
+        if user_anchor is None:
+            return json.dumps(need_user_location("destination"))
+        d_status, d_data = "resolved", {
+            "name": "your location", "lat": user_anchor[0], "lon": user_anchor[1],
+            "type": "coordinates", "matched": "coordinates"}
+    else:
+        dest_anchor = user_anchor or (o_data["lat"], o_data["lon"])
+        d_status, d_data = _resolve_endpoint_decision(destination_name, dest_anchor)
     if d_status == "none":
         return json.dumps({"success": False, "error": "place_not_found",
                            "which": "destination", "place": destination_name})

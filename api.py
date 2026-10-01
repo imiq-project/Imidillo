@@ -145,10 +145,16 @@ def _strip_voice_tags(text: str) -> str:
 
 
 def _add_to_history(session_id: str, query: str, response: str) -> None:
-    # H29: redact PII before persisting so it cannot leak into later turns
-    # replayed as LLM context, or into checkpointer logs.
-    safe_query = _redact_pii(query)
-    safe_response = _strip_voice_tags(_redact_pii(response))
+    # H29: redact emails/phone numbers before persisting so they cannot leak
+    # into later turns replayed as LLM context. Street addresses are KEPT: in a
+    # navigation assistant they are the conversation's content — redacting
+    # them broke every follow-up ("Did you mean Umfassungsstraße 82?" → "yes"
+    # reached the agent as "Did you mean <address>?") and mangled the bot's
+    # own directions ("from Universitätsplatz 2 stops"). The history stays in
+    # this process and is replayed only into the same session; logs still
+    # redact addresses.
+    safe_query = _redact_pii(query, addresses=False)
+    safe_response = _strip_voice_tags(_redact_pii(response, addresses=False))
     with _session_active_lock:
         if session_id not in _session_histories:
             _session_histories[session_id] = []
@@ -320,18 +326,18 @@ _STREET_RE = re.compile(
 )
 
 
-def _redact_pii(text: str) -> str:
-    """Mask email, phone, and partial street addresses.
+def _redact_pii(text: str, addresses: bool = True) -> str:
+    """Mask email, phone, and (unless `addresses=False`) partial street addresses.
 
-    Called before logging and before storing user turns in the in-memory
-    conversation history so leaked PII cannot re-enter the LLM context on
-    subsequent turns.
+    Called before logging (everything masked) and before storing turns in the
+    in-memory conversation history (addresses kept — see _add_to_history).
     """
     if not text:
         return text
     redacted = _EMAIL_RE.sub("<email>", text)
     redacted = _PHONE_RE.sub("<phone>", redacted)
-    redacted = _STREET_RE.sub("<address>", redacted)
+    if addresses:
+        redacted = _STREET_RE.sub("<address>", redacted)
     return redacted
 
 
@@ -437,6 +443,14 @@ class UserLocation(BaseModel):
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
 
+class SelectedPlace(BaseModel):
+    """A place card the user picked in the widget; its follow-up buttons
+    ("Directions to X", "What's around X?") send it along so the answer
+    targets THAT place instead of the agent guessing what "there" means."""
+    name: str = Field(..., min_length=1, max_length=200)
+    lat: float = Field(..., ge=52.0, le=52.3)   # the map-pin bounds (_MGB_PIN_BOUNDS)
+    lon: float = Field(..., ge=11.4, le=11.9)
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     session_id: Optional[str] = Field(None, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
@@ -452,6 +466,8 @@ class ChatRequest(BaseModel):
     # True when the question came in by voice (push-to-talk) and the answer
     # will be spoken back — the agent gets a spoken-conversation style instruction.
     voice_mode: bool = False
+    # Set by the widget's place follow-up buttons (see SelectedPlace).
+    selected_place: Optional[SelectedPlace] = None
 
 
 # ---------------------------------------------------------------------------
@@ -466,13 +482,16 @@ def is_route_question_without_origin(message: str) -> bool:
         "directions to", "route to", "way to",
         "how far is", "distance to",
         "take me to", "navigate to",
-        "get to", "go to"
+        "get to", "go to", "get there", "go there",
+        # German (the widget has a DE mode)
+        "wie komme ich", "weg zu", "weg zum", "weg zur", "weg nach", "weg dorthin",
     ]
 
     origin_keywords = [
         "from", "starting from", "starting at",
         "i'm at", "im at", "i am at",
-        "currently at", "at the"
+        "currently at", "at the",
+        " von ", "ich bin am", "ich bin an", "ich bin in",
     ]
 
     has_route_keyword = any(kw in message_lower for kw in route_keywords)
@@ -654,6 +673,11 @@ def _card_route(data, mode, endpoints=None):
                 "distance_m": pk.get("distance_m"),
                 "within_radius": pk.get("within_radius"),
             }
+            # The garage's position: the widget pins it while the driving
+            # route is on the map ("which garage is 2 km away?").
+            p_lat, p_lon = pk.get("lat"), pk.get("lon")
+            if isinstance(p_lat, (int, float)) and isinstance(p_lon, (int, float)) and _in_mgb(p_lat, p_lon):
+                card["parking"]["lat"], card["parking"]["lon"] = p_lat, p_lon
     else:
         aq = data.get("air_quality")
         if isinstance(aq, dict) and aq.get("found"):
@@ -1528,6 +1552,19 @@ async def chat_endpoint(
             except Exception:
                 pass
         nearest_stop_task.add_done_callback(_swallow)
+
+    if request.selected_place:
+        # Machine-shaped target hint, like the GPS one above: the place card the
+        # user picked, with its coordinates, so "Directions to X" routes to THAT
+        # pin instead of re-resolving the name (event venues often aren't in
+        # the graph) or guessing among the places listed earlier.
+        sp = request.selected_place
+        sp_name = " ".join(sp.name.split())
+        message = (f"{message} (place the user selected on the map: {sp_name} at "
+                   f"lat={sp.lat:.6f}, lon={sp.lon:.6f} — use these coordinates directly, "
+                   f"e.g. get_all_routes or find_transit_route with them, get_nearby_context "
+                   f"with \"{sp.lat:.6f}, {sp.lon:.6f}\"; don't look the name up again)")
+        logger.info(f"Selected place: {sp_name} ({sp.lat:.5f}, {sp.lon:.5f})")
 
     # H29: redact PII from any user-originated text before logging.
     safe_user_input = _redact_pii(request.message)

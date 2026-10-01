@@ -358,6 +358,13 @@
     flex-shrink: 0;
 }
 
+/* Location quick button while sharing is ON (label: "Stop sharing …"). */
+.dashbot-quick-btn.dashbot-loc-quick.is-on {
+    border-color: var(--db-primary);
+    background: #fdf2f8;
+    color: var(--db-primary);
+}
+
 .dashbot-msg {
     margin-bottom: 14px;
     animation: dashbot-msg-in 0.25s ease;
@@ -746,6 +753,37 @@
 @keyframes db-pin-pop {
     from { transform: scale(0); opacity: 0; }
     to   { transform: scale(1); opacity: 1; }
+}
+
+/* ---- "You are here": the shared location on the host map (blue dot with a
+   soft pulse). Rendered via L.divIcon outside the panel — no .dashbot-*
+   ancestor. ---- */
+.db-me { background: none; border: none; }
+.db-me-dot {
+    position: relative;
+    width: 16px;
+    height: 16px;
+    margin: 3px;
+    border-radius: 50%;
+    background: #2563eb;
+    border: 3px solid #fff;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+    box-sizing: border-box;
+}
+.db-me-dot::after {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    border: 2px solid rgba(37, 99, 235, 0.55);
+    animation: db-me-pulse 2s ease-out infinite;
+}
+@keyframes db-me-pulse {
+    from { transform: scale(0.6); opacity: 1; }
+    to   { transform: scale(1.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .db-me-dot::after { animation: none; opacity: 0; }
 }
 
 /* ---- Route reveal: the mode chip riding the line's tip (walker / cyclist /
@@ -1156,12 +1194,14 @@
 .db-tl-stops ol::marker { color: #9ca3af; font-size: 10px; }
 
 /* ---- Route card (walking / cycling / driving) ---- */
+/* Walking is pink like its map line (DB_ROUTE_COLORS) — green read as the
+   dashboard's tram lines. */
 .db-card-route.db-route-walking::before {
-    background: linear-gradient(90deg, #22c55e, #10b981);
+    background: linear-gradient(90deg, #ec4899, #db2777);
 }
 .db-card-route.db-route-walking .db-card-icon {
-    background: linear-gradient(135deg, #22c55e, #10b981);
-    box-shadow: 0 4px 10px -2px rgba(34,197,94,0.35);
+    background: linear-gradient(135deg, #ec4899, #db2777);
+    box-shadow: 0 4px 10px -2px rgba(219,39,119,0.35);
 }
 .db-card-route.db-route-cycling::before {
     background: linear-gradient(90deg, #14b8a6, #0ea5e9);
@@ -1176,6 +1216,15 @@
 .db-card-route.db-route-driving .db-card-icon {
     background: linear-gradient(135deg, #f97316, #ef4444);
     box-shadow: 0 4px 10px -2px rgba(239,68,68,0.35);
+}
+
+/* ---- Place card picked by the user (target of "Directions to …") ---- */
+.db-card-place { transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; }
+.db-card-place:hover { border-color: #e7c6d8; }
+.db-card-place.db-card-selected {
+    border-color: var(--db-primary);
+    background: #fdf2f8;
+    box-shadow: 0 0 0 2px rgba(122, 0, 63, 0.18);
 }
 
 .db-route-directions {
@@ -1600,6 +1649,11 @@
     background: rgba(139, 108, 255, 0.12);
     border-color: var(--db-accent);
 }
+.dashbot-dark .dashbot-quick-btn.dashbot-loc-quick.is-on {
+    background: rgba(139, 108, 255, 0.16);
+    border-color: var(--db-accent);
+    color: #e3d9ff;
+}
 
 .dashbot-dark .dashbot-msg.bot .dashbot-bubble {
     background: rgba(255, 255, 255, 0.05);
@@ -1646,6 +1700,12 @@
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
     color: #e8e6f0;
     border-color: rgba(255, 255, 255, 0.09);
+}
+.dashbot-dark .db-card-place:hover { border-color: rgba(139, 108, 255, 0.35); }
+.dashbot-dark .db-card-place.db-card-selected {
+    background: rgba(139, 108, 255, 0.14);
+    border-color: var(--db-accent);
+    box-shadow: 0 0 0 2px rgba(139, 108, 255, 0.25);
 }
 .dashbot-dark .db-card-title,
 .dashbot-dark .db-tl-name,

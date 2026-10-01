@@ -45,7 +45,8 @@ const T = {
         qBuilding: 'Find a building',     qBuildingQ: 'Where is the library?',
         qDirections: 'Get directions',    qDirectionsQ: 'How do I get to Uni Mensa?',
         qEvents: 'Events today',          qEventsQ: 'What events are happening in Magdeburg today?',
-        qLocation: 'Share my location',
+        qLocation: 'Share my location', qLocationStop: 'Stop sharing my location',
+        youAreHere: 'You are here',
         placeholder: 'Ask about city data...',
         thinking: 'Dashbot is thinking...',
         thinkingPhrases: [
@@ -91,6 +92,10 @@ const T = {
         cShowRoute: 'Show this route on the map', cShowPlace: 'Show on the map',
         sDirections: 'Directions there', sDirectionsQ: 'How do I get there?',
         sNearby: "What's nearby?", sNearbyQ: "What's around there?",
+        sDirectionsTo: function (n) { return 'Directions to ' + n; },
+        sDirectionsToQ: function (n) { return 'How do I get to ' + n + '?'; },
+        sNearbyOf: function (n) { return 'Around ' + n; },
+        sNearbyOfQ: function (n) { return "What's around " + n + '?'; },
         sParking: 'Parking nearby', sParkingQ: 'Available parking near me?',
         sWeather: 'Weather now', sWeatherQ: "What's the weather right now?",
         errNoAnswer: 'Sorry, I could not generate a response.',
@@ -113,7 +118,8 @@ const T = {
         qBuilding: 'Gebäude finden',      qBuildingQ: 'Wo ist die Bibliothek?',
         qDirections: 'Weg finden',        qDirectionsQ: 'Wie komme ich zur Uni-Mensa?',
         qEvents: 'Events heute',          qEventsQ: 'Welche Veranstaltungen gibt es heute in Magdeburg?',
-        qLocation: 'Standort teilen',
+        qLocation: 'Standort teilen', qLocationStop: 'Standort nicht mehr teilen',
+        youAreHere: 'Du bist hier',
         placeholder: 'Frag nach Stadtdaten…',
         thinking: 'Dashbot denkt nach…',
         thinkingPhrases: [
@@ -159,6 +165,10 @@ const T = {
         cShowRoute: 'Diese Route auf der Karte zeigen', cShowPlace: 'Auf der Karte zeigen',
         sDirections: 'Weg dorthin', sDirectionsQ: 'Wie komme ich dorthin?',
         sNearby: 'Was ist in der Nähe?', sNearbyQ: 'Was gibt es dort in der Nähe?',
+        sDirectionsTo: function (n) { return 'Weg zu ' + n; },
+        sDirectionsToQ: function (n) { return 'Wie komme ich zu ' + n + '?'; },
+        sNearbyOf: function (n) { return 'Rund um ' + n; },
+        sNearbyOfQ: function (n) { return 'Was gibt es rund um ' + n + '?'; },
         sParking: 'Parken in der Nähe', sParkingQ: 'Gibt es freie Parkplätze in meiner Nähe?',
         sWeather: 'Wetter jetzt', sWeatherQ: 'Wie ist das Wetter gerade?',
         errNoAnswer: 'Entschuldigung, ich konnte keine Antwort erzeugen.',
@@ -172,6 +182,13 @@ function t(key) {
     const v = table[key];
     if (v !== undefined) return v;
     return T.en[key] !== undefined ? T.en[key] : key;
+}
+
+// The welcome screen's location button is a toggle too, so its label says what
+// tapping does now ("Share my location" / "Stop sharing my location") — with a
+// fixed "Share" label, a second tap silently turned sharing OFF.
+function locQuickLabel(on) {
+    return '<span class="q-icon">&#128205;</span> ' + dbEscape(t(on ? 'qLocationStop' : 'qLocation'));
 }
 
 // Welcome screen markup in the current language (initial render, reset, and
@@ -189,8 +206,8 @@ function welcomeMarkup() {
             quick('&#127777;', 'qWeather') + quick('&#127359;', 'qParking') +
             quick('&#127963;', 'qBuilding') + quick('&#128587;', 'qDirections') +
             quick('&#127917;', 'qEvents') +
-            '<button class="dashbot-quick-btn dashbot-loc-quick" id="dashbotLocQuick" type="button">' +
-                '<span class="q-icon">&#128205;</span> ' + dbEscape(t('qLocation')) + '</button>' +
+            '<button class="dashbot-quick-btn dashbot-loc-quick' + (locationEnabled ? ' is-on' : '') +
+                '" id="dashbotLocQuick" type="button">' + locQuickLabel(locationEnabled) + '</button>' +
         '</div>' +
     '</div>';
 }
@@ -200,6 +217,7 @@ const SPEAK_ALL_REPLIES = !!(options && options.speakAllReplies); // speak typed
 let voiceAvailable = false;     // backend /voice/* proxy configured (learned at /session/start)
 let voiceRepliesOn = true;      // master switch (header speaker button, persisted)
 let pendingVoiceInput = false;  // the next sendMessage() was initiated by push-to-talk
+let pendingSelectedPlace = null; // the next sendMessage() came from a place button: {name, lat, lon}
 try { voiceRepliesOn = localStorage.getItem('dashbot-voice') !== 'off'; } catch (e) {}
 const DB_SR = window.SpeechRecognition || window.webkitSpeechRecognition;   // browser STT, if any
 
@@ -513,6 +531,11 @@ function updateLocationButton(state) {
     var label = locationBtn.querySelector('.db-loc-label');
     if (label) label.textContent = labels[state] || labels.off;
     locationBtn.title = titles[state] || titles.off;
+    var quick = document.getElementById('dashbotLocQuick');
+    if (quick) {
+        quick.classList.toggle('is-on', state === 'on');
+        quick.innerHTML = locQuickLabel(state === 'on');
+    }
 }
 
 function showLocationToast(msg) {
@@ -527,12 +550,47 @@ function showLocationToast(msg) {
     }, 2000);
 }
 
+// "You are here" on the host map while location is shared (a blue dot, plus
+// the browser's accuracy circle when it's known): routes and "near me"
+// answers are relative to this point, so the user can see what the bot
+// assumes. Kept apart from the per-answer overlay, which every question clears.
+let userLocLayer = null;
+function showUserLocation(loc, accuracyM) {
+    hideUserLocation();
+    const m = getLeafletMap();
+    if (!m || !window.L || !loc) return;
+    try {
+        const layers = [];
+        if (accuracyM && accuracyM > 25 && accuracyM < 3000) {
+            layers.push(L.circle([loc.lat, loc.lon], {
+                radius: accuracyM, color: '#2563eb', weight: 1, opacity: 0.4,
+                fillColor: '#3b82f6', fillOpacity: 0.08, interactive: false
+            }));
+        }
+        const me = L.marker([loc.lat, loc.lon], {
+            icon: L.divIcon({ className: 'db-me', html: '<div class="db-me-dot"></div>',
+                              iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -10] }),
+            zIndexOffset: 500, keyboard: false
+        });
+        me.bindPopup(dbEscape(t('youAreHere') + (studyLocation && studyLocation.name ? ' — ' + studyLocation.name : '')));
+        layers.push(me);
+        userLocLayer = L.layerGroup(layers).addTo(m);
+        if (!m.getBounds().contains([loc.lat, loc.lon])) m.panTo([loc.lat, loc.lon]);
+    } catch (e) {}
+}
+function hideUserLocation() {
+    const m = getLeafletMap();
+    try { if (m && userLocLayer) m.removeLayer(userLocLayer); } catch (e) {}
+    userLocLayer = null;
+}
+
 function toggleLocation() {
     if (locationEnabled) {
         userLocation = null;
         locationEnabled = false;
         locationStatus = 'off';
         updateLocationButton('off');
+        hideUserLocation();
         showLocationToast(t('toastLocOff'));
         return;
     }
@@ -545,6 +603,7 @@ function toggleLocation() {
         locationEnabled = true;
         locationStatus = 'on';
         updateLocationButton('on');
+        showUserLocation(userLocation, null);
         showLocationToast(t('toastLocOn'));
         return;
     }
@@ -562,6 +621,7 @@ function toggleLocation() {
             locationEnabled = true;
             locationStatus = 'on';
             updateLocationButton('on');
+            showUserLocation(userLocation, pos.coords.accuracy);
             showLocationToast(t('toastLocOn'));
         },
         function(err) {
@@ -1026,8 +1086,10 @@ function clearMapOverlay() {
     dashbotPlaceMarkers = {};
 }
 
-// Route line colors (match the route cards' accent gradients).
-const DB_ROUTE_COLORS = { walking: '#16a34a', cycling: '#0ea5e9', driving: '#7c3aed' };
+// Route line colors (match the route cards' accent gradients). Walking is pink,
+// not green: the dashboard already draws its tram/traffic segments in green,
+// orange and red, and a green walking route vanished among the tram lines.
+const DB_ROUTE_COLORS = { walking: '#db2777', cycling: '#0ea5e9', driving: '#7c3aed' };
 // Live congestion tints the DRIVING line (the card carries `congestion`).
 const DB_CONGESTION_COLORS = { moderate: '#f59e0b', heavy: '#ef4444' };
 // Per-mode look and pacing. Textures: walking = round dots that read as
@@ -1277,7 +1339,18 @@ function drawRoute(mode, coords, straightLine, card) {
             className: 'db-route-flow', interactive: false
         }).addTo(m));
     }
-    fitRouteView(m, coords);
+    // Driving: pin the live-parking garage the card names ("50 free · 2.0 km"),
+    // so it's visible WHICH garage — it goes away with the route.
+    let fitCoords = coords;
+    const pk = (mode === 'driving' && card) ? card.parking : null;
+    if (pk && pk.lat != null && pk.lon != null) {
+        const pm = L.marker([pk.lat, pk.lon], { icon: pinIcon('parking'), zIndexOffset: 400 });
+        pm.bindPopup(dbEscape((pk.name || t('route_driving')) +
+                              (pk.free != null ? ' · ' + pk.free + ' ' + t('cFree') : '')));
+        routeLayers.push(pm.addTo(m));
+        fitCoords = coords.concat([[pk.lat, pk.lon]]);
+    }
+    fitRouteView(m, fitCoords);
 
     if (straightLine) return;   // an estimate: no traveler, no reveal
     routeTraveler = L.marker(coords[0], {
@@ -1292,7 +1365,8 @@ function drawRoute(mode, coords, straightLine, card) {
     const cum = dbPathMetrics(coords);
     const total = cum[cum.length - 1];
     const duration = st.duration * Math.min(1.5, Math.max(0.75, total / 2500));
-    const layers = routeLayers.slice();
+    // Only the lines reveal (the parking pin is a marker, not a polyline).
+    const layers = routeLayers.filter(function (l) { return typeof l.setLatLngs === 'function'; });
     const traveler = routeTraveler;
     let start = null;
     function frame(ts) {
@@ -1359,6 +1433,53 @@ function selectPlace(lat, lon) {
     } catch (e) {}
 }
 
+// A place card was clicked: highlight it among its message's cards, put its pin
+// back if a later answer cleared the map, focus it, and make it the target of
+// that message's "Directions to …" / "Around …" buttons. Before, the buttons
+// sent a bare "How do I get there?" and the agent guessed — usually the LAST
+// place listed, whichever card the user had tapped.
+function selectPlaceCard(el, card) {
+    drawOnMap(card);
+    if (getLeafletMap()) selectPlace(card.lat, card.lon);
+    const group = el.closest('.db-cards');
+    if (group) {
+        group.querySelectorAll('.db-card-place.db-card-selected').forEach(function (c) {
+            c.classList.remove('db-card-selected');
+        });
+    }
+    el.classList.add('db-card-selected');
+    const msgDiv = el.closest('.dashbot-msg');
+    if (msgDiv) {
+        msgDiv._dbTarget = card;
+        refreshPlaceChips(msgDiv);
+    }
+}
+
+// The place a message's follow-up buttons act on: the card the user picked,
+// else the message's first place (the answer's main pick).
+function placeTarget(msgDiv) {
+    if (!msgDiv) return null;
+    return msgDiv._dbTarget || (msgDiv._dbPlaces && msgDiv._dbPlaces[0]) || null;
+}
+
+function dbShortName(name) {
+    const s = String(name || '').trim();
+    return s.length > 26 ? s.slice(0, 25).trim() + '…' : s;
+}
+
+function placeChipLabel(sg, target) {
+    if (!sg.kind || !target || !target.name) return sg.icon + ' ' + sg.label;
+    const key = sg.kind === 'directions' ? 'sDirectionsTo' : 'sNearbyOf';
+    return sg.icon + ' ' + t(key)(dbShortName(target.name));
+}
+
+function refreshPlaceChips(msgDiv) {
+    const target = placeTarget(msgDiv);
+    (msgDiv._dbChips || []).forEach(function (c) {
+        c.btn.textContent = placeChipLabel(c.sg, target);
+    });
+}
+
 function renderPlaceCard(card) {
     return '<div class="db-card db-card-place">' +
         '<div class="db-card-head">' +
@@ -1394,10 +1515,10 @@ function renderCard(container, card) {
             el.style.cursor = 'pointer';
             el.title = t('cShowRoute');
             el.addEventListener('click', function () { selectRoute(el, card); });
-        } else if (card.type === 'place' && card.lat != null && card.lon != null && getLeafletMap()) {
+        } else if (card.type === 'place' && card.lat != null && card.lon != null) {
             el.style.cursor = 'pointer';
             el.title = t('cShowPlace');
-            el.addEventListener('click', function () { selectPlace(card.lat, card.lon); });
+            el.addEventListener('click', function () { selectPlaceCard(el, card); });
         }
         container.appendChild(el);
         if (isRoute) {
@@ -1421,8 +1542,9 @@ function buildSuggestions(cards) {
     (cards || []).forEach(function (c) { if (c && c.type) types[c.type] = true; });
     var s = [];
     if (types.place) {
-        s.push({ icon: '🧭', label: t('sDirections'), q: t('sDirectionsQ') });
-        s.push({ icon: '📍', label: t('sNearby'), q: t('sNearbyQ') });
+        // `kind`: re-labelled with, and sent for, the message's target place.
+        s.push({ icon: '🧭', label: t('sDirections'), q: t('sDirectionsQ'), kind: 'directions' });
+        s.push({ icon: '📍', label: t('sNearby'), q: t('sNearbyQ'), kind: 'nearby' });
     }
     // Route answers already show every mode (walk/bike/tram/drive) with live
     // conditions, so they get no follow-up chips — not even the generic fallback.
@@ -1443,14 +1565,25 @@ function renderSuggestions(msgDiv, suggestions) {
     if (!msgDiv || !suggestions || !suggestions.length) return;
     var row = document.createElement('div');
     row.className = 'db-suggestions';
+    msgDiv._dbChips = [];
     suggestions.forEach(function (sg) {
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'db-suggest-chip';
-        b.textContent = sg.icon + ' ' + sg.label;
+        b.textContent = placeChipLabel(sg, placeTarget(msgDiv));
+        if (sg.kind) msgDiv._dbChips.push({ btn: b, sg: sg });
         b.addEventListener('click', function () {
             if (sendBtn.disabled) return;   // ignore taps while a request is in flight
-            input.value = sg.q;
+            // Place buttons carry THEIR message's target — also on an old
+            // message scrolled back to, whatever was discussed since.
+            var target = sg.kind ? placeTarget(msgDiv) : null;
+            if (target && target.name) {
+                var key = sg.kind === 'directions' ? 'sDirectionsToQ' : 'sNearbyOfQ';
+                input.value = t(key)(target.name);
+                pendingSelectedPlace = { name: String(target.name).slice(0, 200), lat: target.lat, lon: target.lon };
+            } else {
+                input.value = sg.q;
+            }
             sendMessage();
         });
         row.appendChild(b);
@@ -2156,6 +2289,8 @@ async function sendMessage() {
     // page opted into speaking everything) and the speaker isn't muted.
     const wasVoice = pendingVoiceInput;
     pendingVoiceInput = false;
+    const selectedPlace = pendingSelectedPlace;
+    pendingSelectedPlace = null;
     const speakReply = voiceRepliesOn && (wasVoice || SPEAK_ALL_REPLIES);
     const speechGen = speech.gen();   // reactions belong to THIS answer only
     const speechChunker = speakReply ? makeSpeechChunker() : null;
@@ -2229,7 +2364,10 @@ async function sendMessage() {
                     location_status: locationStatus,
                     // Spoken question that will be spoken back: the server
                     // injects the spoken-conversation style (short, natural).
-                    voice_mode: wasVoice && speakReply
+                    voice_mode: wasVoice && speakReply,
+                    // A place button's target: the server hands the agent its
+                    // coordinates, so the answer is about THAT place.
+                    selected_place: selectedPlace || undefined
                 })
             });
         }
@@ -2323,6 +2461,12 @@ async function sendMessage() {
                 bubble.appendChild(time);
             }
             if (suggList === null) suggList = buildSuggestions(pendingCards);
+            // This answer's places, for its follow-up buttons (placeTarget).
+            if (msgDiv) {
+                msgDiv._dbPlaces = pendingCards.filter(function (c) {
+                    return c && c.type === 'place' && c.lat != null && c.lon != null;
+                });
+            }
             flushCards();
             if (outerBubble) outerBubble.classList.remove('is-streaming');
             if (botAvatar) botAvatar.classList.remove('db-speaking');

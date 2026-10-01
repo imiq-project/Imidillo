@@ -130,7 +130,8 @@ def _format_now() -> str:
 _USE_COORDS_HINT = (
     "For anything anchored on their position (a route from here, the nearest X, "
     "what's nearby) hand the tools these coordinates — get_all_routes, "
-    "get_routes_for_places with origin_lat/origin_lon, find_nearest, query_by_location — "
+    "get_routes_for_places and find_transit_route with origin_lat/origin_lon, "
+    "find_nearest, query_by_location, get_nearby_context with location \"<lat>, <lon>\" — "
     "never this address text as a place name."
 )
 

@@ -22,6 +22,8 @@ from models import Coordinates
 from mcp_servers._traffic_helpers import haversine_m
 from mcp_servers._place_resolver import (
     decide_place,
+    is_self_reference,
+    need_user_location,
     resolve_place_candidates,
 )
 from mcp_servers._geocode import (
@@ -278,6 +280,9 @@ def get_nearby_context(location: str, radius: int = 1000) -> str:
     """
     # Step 1: Resolve the location (a bare "lat, lon" pair — the user's own
     # position — is used as-is; everything else via the shared resolver).
+    # "my location" carries no coordinates here: ask for the "lat, lon" form.
+    if is_self_reference(location):
+        return json.dumps(need_user_location("location"))
     resolved = _coords_location(location) or _resolve_location(location)
     if not resolved:
         return json.dumps({

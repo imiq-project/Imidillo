@@ -95,6 +95,47 @@ _SIM_STOPWORDS = {"magdeburg"}
 _GENERIC_TYPE_WORDS = {"office", "buero", "building", "gebaeude", "haus"}
 
 
+# ---------------------------------------------------------------------------
+# Self-references. "my location" / "hier" mean WHERE THE USER IS, not a place
+# name — resolved as names they hit junk: the IMIQ geocoder answered "my
+# location Magdeburg" with "Louis Magdeburg" (a motorcycle shop by S-Bahnhof
+# Neustadt), so every transit route "from my location" boarded there.
+# Tools map these to the user's coordinates (or ask for them) instead.
+# ---------------------------------------------------------------------------
+_SELF_REF_WORDS = frozenset({
+    "my", "current", "location", "position", "gps", "your", "user", "users", "s",
+    "the", "here", "me", "from", "at", "magdeburg",
+    "mein", "meine", "meinem", "meinen", "meiner", "aktueller", "aktuelle",
+    "aktuellen", "jetziger", "jetzigen", "standort", "hier", "von", "ab",
+})
+# At least one of these must be present ("my current" alone is not a place).
+_SELF_REF_CORE = frozenset({"location", "position", "gps", "here", "me", "standort", "hier"})
+_SELF_REF_PHRASES = frozenset({"where i am", "wo ich bin"})
+
+
+def is_self_reference(text: str) -> bool:
+    """True when `text` names the user's own position ("my location",
+    "current position", "here", "mein Standort", "hier"), not a place."""
+    norm = _norm_text(text)
+    tokens = set(norm.split())
+    if norm in _SELF_REF_PHRASES:
+        return True
+    return bool(tokens) and tokens <= _SELF_REF_WORDS and bool(tokens & _SELF_REF_CORE)
+
+
+def need_user_location(which: str) -> dict:
+    """Tool error for a self-reference without the user's coordinates."""
+    return {
+        "success": False,
+        "error": "need_user_location",
+        "which": which,
+        "hint": "The user's own position can't be looked up by name. If their location "
+                "is shared, pass its coordinates (origin_lat/origin_lon, near_lat/near_lon, "
+                "or the place text 'lat, lon'); otherwise ask them to share their location "
+                "or name a starting point.",
+    }
+
+
 def name_similarity(query: str, name: str, aliases: list | None = None) -> float:
     """Best similarity in [0, 1] between a query and a node's name/aliases.
 
